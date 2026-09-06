@@ -3,7 +3,10 @@
 use Illuminate\Support\Facades\Route;
 
 Route::get('/', function () {
-    return view('welcome');
+    return response()->json([
+        'app' => config('app.name'),
+        'status' => 'ok',
+    ]);
 });
 
 // Media module owns this route — see app/Modules/Media/routes-web.php for
