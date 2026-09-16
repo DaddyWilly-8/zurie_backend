@@ -5,6 +5,7 @@ namespace App\Modules\Auth\Controllers;
 use App\Http\Controllers\Controller;
 use App\Modules\Auth\Requests\ForgotPasswordRequest;
 use App\Modules\Auth\Requests\LoginRequest;
+use App\Modules\Auth\Requests\RegisterRequest;
 use App\Modules\Auth\Requests\ResetPasswordRequest;
 use App\Modules\Auth\Resources\AuthUserResource;
 use App\Modules\Auth\Services\AuthService;
@@ -26,6 +27,18 @@ class AuthController extends Controller
         $user = $this->authService->attempt($credentials['email'], $credentials['password']);
 
         return $this->ok(new AuthUserResource($user));
+    }
+
+    /**
+     * Public storefront signup — see AuthService::register(). Never
+     * required to complete a purchase; POST /orders (checkout) has no
+     * auth:sanctum requirement and works standalone as guest checkout.
+     */
+    public function register(RegisterRequest $request)
+    {
+        $user = $this->authService->register($request->validated());
+
+        return $this->created(new AuthUserResource($user));
     }
 
     public function logout()

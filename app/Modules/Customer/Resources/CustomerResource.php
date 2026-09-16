@@ -18,6 +18,7 @@ class CustomerResource extends JsonResource
             'phone' => $this->phone,
             'whatsappNumber' => $this->whatsapp_number,
             'email' => $this->email,
+            'isRegistered' => $this->user_id !== null,
             'createdAt' => $this->created_at?->toISOString(),
         ];
     }

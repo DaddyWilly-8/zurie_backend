@@ -2,10 +2,16 @@
 
 namespace App\Modules\Order\Services;
 
+use App\Modules\Coupon\Services\CouponService;
 use App\Modules\Customer\Services\CustomerService;
+use App\Modules\Finance\Services\FinanceService;
 use App\Modules\Inventory\Services\InventoryService;
+use App\Modules\Notification\Services\NotificationService;
 use App\Modules\Order\Exceptions\InvalidOrderTransitionException;
 use App\Modules\Order\Models\Order;
+use App\Modules\Outlet\Models\SalesOutlet;
+use App\Modules\Outlet\Services\OutletService;
+use App\Modules\PriceList\Services\PriceListService;
 use App\Modules\Product\Services\ProductService;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\Eloquent\Collection;
@@ -50,6 +56,11 @@ class OrderService
         private readonly CustomerService $customerService,
         private readonly ProductService $productService,
         private readonly InventoryService $inventoryService,
+        private readonly OutletService $outletService,
+        private readonly PriceListService $priceListService,
+        private readonly FinanceService $financeService,
+        private readonly NotificationService $notificationService,
+        private readonly CouponService $couponService,
     ) {}
 
     /**
@@ -67,11 +78,12 @@ class OrderService
     }
 
     /**
-     * Checkout — the only place an Order row is ever created. Authoritative
-     * pricing only: every line's name/price/salePrice/buyingPrice comes
-     * from ProductService::findActiveForOrder(), never from the client
-     * payload, and any `total` the client sends is never read at all (not
-     * even present in StoreOrderRequest's validated() output).
+     * Checkout — the only place a `source: website` Order row is ever
+     * created. Authoritative pricing only: every line's name/price comes
+     * from ProductService::findActiveForOrder() + PriceListService, never
+     * from the client payload, and any `total` the client sends is never
+     * read at all (not even present in StoreOrderRequest's validated()
+     * output).
      *
      * Wrapped in a single transaction covering the customer lookup, every
      * line's stock decrement, and the order + order_items rows — if any
@@ -84,21 +96,113 @@ class OrderService
      */
     public function checkout(array $data): Order
     {
-        return DB::transaction(function () use ($data) {
-            $customer = $this->customerService->findOrCreate([
+        $outlet = $this->outletService->defaultOnlineOutlet();
+
+        return $this->createOrder(
+            customerData: [
                 'name' => $data['customerName'],
                 'phone' => $data['customerPhone'],
                 'whatsapp_number' => $data['whatsappNumber'] ?? null,
                 'email' => $data['customerEmail'] ?? null,
-            ]);
+            ],
+            items: $data['items'],
+            source: 'website',
+            outlet: $outlet,
+            status: 'new',
+            // No payment gateway yet — revenue is recognized at order
+            // placement, but the debit lands in Accounts Receivable, not
+            // Cash, since nothing's actually been collected. See
+            // ChartOfAccountsSeeder's "AR" ledger comment.
+            paymentLedgerCode: 'AR',
+            causedByAnonymous: true,
+            activityLabel: fn (Order $order) => "Guest checkout — Order {$order->order_number} placed",
+            couponCode: $data['couponCode'] ?? null,
+        );
+    }
+
+    /**
+     * POS sale — same underlying mechanics as checkout() (authoritative
+     * pricing, locked inventory decrement, ledger posting), but: source is
+     * `pos` not `website`; status goes straight to `delivered` since goods
+     * leave immediately at the counter (no async fulfillment pipeline);
+     * and the debit lands in Cash, not Accounts Receivable, since payment
+     * is collected at the point of sale. See
+     * Zurie_V2_Architecture_Design (2).md §14/§32.
+     *
+     * Customer resolution reuses the exact same guest/registered mechanism
+     * as website checkout — a "walk-in" customer is simply one identified
+     * by name+phone with no linked user account, same as a guest checkout;
+     * no separate walk-in code path or record type exists (see
+     * CustomerService::findOrCreate()).
+     *
+     * @param  array<string, mixed>  $data  outletId, items, customerId? (existing customer) or customerName+customerPhone (guest/walk-in)
+     */
+    public function posSale(array $data): Order
+    {
+        $outlet = $this->outletService->findOrFail($data['outletId']);
+
+        $customerData = isset($data['customerId'])
+            ? null
+            : [
+                'name' => $data['customerName'],
+                'phone' => $data['customerPhone'],
+                'whatsapp_number' => $data['whatsappNumber'] ?? null,
+                'email' => $data['customerEmail'] ?? null,
+            ];
+
+        return $this->createOrder(
+            customerData: $customerData,
+            existingCustomerId: $data['customerId'] ?? null,
+            items: $data['items'],
+            source: 'pos',
+            outlet: $outlet,
+            status: 'delivered',
+            paymentLedgerCode: 'CASH',
+            causedByAnonymous: false,
+            activityLabel: fn (Order $order) => "POS sale — Order {$order->order_number} completed at {$outlet->name}",
+            couponCode: $data['couponCode'] ?? null,
+        );
+    }
+
+    /**
+     * Shared core of checkout()/posSale() — everything that doesn't differ
+     * between channels: customer resolution, order + line creation,
+     * price-list-aware pricing, locked inventory decrement, and ledger
+     * posting. The two public methods above only decide *which* values to
+     * pass in (source, status, payment ledger, activity wording).
+     *
+     * @param  array<string, mixed>|null  $customerData  name, phone, whatsapp_number?, email? — null if $existingCustomerId is given instead
+     * @param  array<int, array{productId: int, quantity: int}>  $items
+     */
+    private function createOrder(
+        ?array $customerData,
+        array $items,
+        string $source,
+        SalesOutlet $outlet,
+        string $status,
+        string $paymentLedgerCode,
+        bool $causedByAnonymous,
+        \Closure $activityLabel,
+        ?int $existingCustomerId = null,
+        ?string $couponCode = null,
+    ): Order {
+        return DB::transaction(function () use (
+            $customerData, $items, $source, $outlet, $status,
+            $paymentLedgerCode, $causedByAnonymous, $activityLabel, $existingCustomerId, $couponCode,
+        ) {
+            $customer = $existingCustomerId !== null
+                ? $this->customerService->findForAdmin($existingCustomerId)
+                : $this->customerService->findOrCreate($customerData);
 
             $order = Order::create([
                 'customer_id' => $customer->id,
-                'customer_name' => $data['customerName'],
-                'customer_phone' => $data['customerPhone'],
-                'whatsapp_number' => $data['whatsappNumber'] ?? null,
-                'customer_email' => $data['customerEmail'] ?? null,
-                'status' => 'new',
+                'customer_name' => $customer->name,
+                'customer_phone' => $customer->phone,
+                'whatsapp_number' => $customer->whatsapp_number,
+                'customer_email' => $customer->email,
+                'status' => $status,
+                'source' => $source,
+                'outlet_id' => $outlet->id,
                 'total_amount' => 0,
             ]);
 
@@ -111,9 +215,10 @@ class OrderService
             // unique — MySQL's auto_increment already does that work.
             $order->update(['order_number' => self::generateOrderNumber($order->id)]);
 
-            $totalAmount = 0;
+            $totalRevenue = 0.0;
+            $totalCost = 0.0;
 
-            foreach ($data['items'] as $line) {
+            foreach ($items as $line) {
                 $product = $this->productService->findActiveForOrder($line['productId']);
 
                 // Row-locked decrement — see InventoryService::decrementForOrder()
@@ -124,11 +229,21 @@ class OrderService
                 // past zero. Throws InsufficientStockException, caught
                 // globally in bootstrap/app.php, if stock is short — which
                 // rolls back this entire transaction.
-                $this->inventoryService->decrementForOrder($product->id, $line['quantity']);
+                $this->inventoryService->decrementForOrder($product->id, $line['quantity'], Order::class, $order->id);
 
-                $unitSellingPrice = (float) ($product->sale_price ?? $product->price);
+                $resolved = $this->priceListService->resolvePrice(
+                    productId: $product->id,
+                    outletId: $outlet->id,
+                    customerId: $customer->id,
+                    defaultPrice: (float) $product->price,
+                    defaultSalePrice: $product->sale_price !== null ? (float) $product->sale_price : null,
+                );
+                $unitSellingPrice = $resolved['salePrice'] ?? $resolved['price'];
+
                 $lineTotal = $unitSellingPrice * $line['quantity'];
-                $totalAmount += $lineTotal;
+                $lineCost = (float) $product->buying_price * $line['quantity'];
+                $totalRevenue += $lineTotal;
+                $totalCost += $lineCost;
 
                 $order->items()->create([
                     'product_id' => $product->id,
@@ -140,28 +255,136 @@ class OrderService
                 ]);
             }
 
-            $order->update(['total_amount' => $totalAmount]);
+            // Coupon validated against the gross subtotal (before
+            // discount) — min_order_amount is meant to gate on what the
+            // customer is buying, not what they end up paying after the
+            // same coupon reduces it. Redeeming inside this transaction
+            // means a checkout that fails downstream (it can't at this
+            // point, but consistency matters) never burns a use.
+            $discount = 0.0;
+            $coupon = null;
+            if ($couponCode !== null) {
+                $coupon = $this->couponService->validate($couponCode, $totalRevenue);
+                $discount = $this->couponService->calculateDiscount($coupon, $totalRevenue);
+            }
+
+            $order->update([
+                'total_amount' => $totalRevenue - $discount,
+                'discount_amount' => $discount,
+                'coupon_id' => $coupon?->id,
+            ]);
+
+            if ($coupon !== null) {
+                $this->couponService->redeem($coupon);
+            }
+
+            $this->postSaleToLedger($order, $totalRevenue, $discount, $totalCost, $outlet->cost_center_id, $paymentLedgerCode);
 
             // Logged manually, not via Order having the LogsActivity trait
-            // — checkout() itself issues 3 separate saves (create, the
-            // order_number update, the total_amount update), so the trait
-            // would log 3 noisy entries per order instead of 1 meaningful
-            // one. Always a guest action (checkout has no auth:sanctum
-            // middleware) — causedByAnonymous() rather than relying on the
-            // logger's default causer resolution, which would just resolve
-            // to null anyway on an unauthenticated request; explicit here
-            // so it reads as a deliberate choice, not an oversight. The
-            // order number goes in the description (not just the short
-            // "Guest checkout" label) so an admin scanning the activity log
-            // knows which order it was without opening it.
-            activity('order')
-                ->performedOn($order)
-                ->causedByAnonymous()
-                ->event('created')
-                ->log("Guest checkout — Order {$order->order_number} placed");
+            // — this method issues 3+ separate saves (create, order_number
+            // update, total_amount update), so the trait would log that
+            // many noisy entries per order instead of 1 meaningful one.
+            $activity = activity('order')->performedOn($order)->event('created');
+            if ($causedByAnonymous) {
+                $activity->causedByAnonymous();
+            }
+            $activity->log($activityLabel($order));
 
             return $order->load('items');
         });
+    }
+
+    /**
+     * Debit the payment ledger (Accounts Receivable for website, Cash for
+     * POS) for what's actually owed/collected (revenue minus any coupon
+     * discount), credit Sales Account for the *full gross* revenue, and
+     * — when a discount applies — debit Sales Discounts (contra-revenue)
+     * for the difference, so Net Sales = Sales Account - Sales Discounts
+     * matches what was really charged. Debit Cost of Goods Sold, credit
+     * Inventory Asset for the cost, unaffected by any discount. All lines
+     * tagged with the outlet's cost center so Profit/Loss-by-branch
+     * (Phase 5) falls straight out of the ledger. See
+     * Zurie_V2_Architecture_Design (2).md §30.2/§34's worked example.
+     */
+    private function postSaleToLedger(Order $order, float $grossRevenue, float $discount, float $cost, ?int $costCenterId, string $paymentLedgerCode): void
+    {
+        $paymentLedger = $this->financeService->systemLedger($paymentLedgerCode);
+        $sales = $this->financeService->systemLedger('SALES');
+        $cogs = $this->financeService->systemLedger('COGS');
+        $inventoryAsset = $this->financeService->systemLedger('INV-ASSET');
+
+        $lines = [
+            ['ledger_id' => $paymentLedger->id, 'type' => 'debit', 'amount' => $grossRevenue - $discount, 'cost_center_id' => $costCenterId],
+            ['ledger_id' => $sales->id, 'type' => 'credit', 'amount' => $grossRevenue, 'cost_center_id' => $costCenterId],
+            ['ledger_id' => $cogs->id, 'type' => 'debit', 'amount' => $cost, 'cost_center_id' => $costCenterId],
+            ['ledger_id' => $inventoryAsset->id, 'type' => 'credit', 'amount' => $cost, 'cost_center_id' => $costCenterId],
+        ];
+
+        if ($discount > 0) {
+            $salesDiscounts = $this->financeService->systemLedger('SALES-DISC');
+            $lines[] = ['ledger_id' => $salesDiscounts->id, 'type' => 'debit', 'amount' => $discount, 'cost_center_id' => $costCenterId];
+        }
+
+        $this->financeService->postEntry(
+            $lines,
+            narration: "Order {$order->order_number}",
+            referenceType: Order::class,
+            referenceId: $order->id,
+        );
+    }
+
+    /**
+     * Exact mirror of postSaleToLedger() with debit/credit swapped — used
+     * by cancel() so a cancelled order's revenue/COGS/discount impact
+     * nets to zero in the ledger, not just in the order's own status.
+     * Gross revenue and discount are reconstructed from the order's own
+     * stored total_amount/discount_amount (total_amount is already net of
+     * discount) rather than re-summing items, since a coupon's discount
+     * can't otherwise be recovered after the fact.
+     */
+    private function reverseSaleLedger(Order $order, float $cost, string $paymentLedgerCode, ?int $costCenterId): void
+    {
+        $discount = (float) $order->discount_amount;
+        $grossRevenue = (float) $order->total_amount + $discount;
+
+        $paymentLedger = $this->financeService->systemLedger($paymentLedgerCode);
+        $sales = $this->financeService->systemLedger('SALES');
+        $cogs = $this->financeService->systemLedger('COGS');
+        $inventoryAsset = $this->financeService->systemLedger('INV-ASSET');
+
+        $lines = [
+            ['ledger_id' => $sales->id, 'type' => 'debit', 'amount' => $grossRevenue, 'cost_center_id' => $costCenterId],
+            ['ledger_id' => $paymentLedger->id, 'type' => 'credit', 'amount' => $grossRevenue - $discount, 'cost_center_id' => $costCenterId],
+            ['ledger_id' => $inventoryAsset->id, 'type' => 'debit', 'amount' => $cost, 'cost_center_id' => $costCenterId],
+            ['ledger_id' => $cogs->id, 'type' => 'credit', 'amount' => $cost, 'cost_center_id' => $costCenterId],
+        ];
+
+        if ($discount > 0) {
+            $salesDiscounts = $this->financeService->systemLedger('SALES-DISC');
+            $lines[] = ['ledger_id' => $salesDiscounts->id, 'type' => 'credit', 'amount' => $discount, 'cost_center_id' => $costCenterId];
+        }
+
+        $this->financeService->postEntry(
+            $lines,
+            narration: "Cancellation of Order {$order->order_number}",
+            referenceType: Order::class,
+            referenceId: $order->id,
+        );
+    }
+
+    /**
+     * A registered customer's own order history — GET /account/orders.
+     * Scoped strictly to their linked Customer id; never accepts an
+     * arbitrary id from the request, only ever the one resolved from the
+     * authenticated session (see AccountController).
+     */
+    public function paginateForCustomer(int $customerId, int $page, int $pageSize): LengthAwarePaginator
+    {
+        return Order::query()
+            ->where('customer_id', $customerId)
+            ->with('items')
+            ->orderByDesc('id')
+            ->paginate($pageSize, ['*'], 'page', $page);
     }
 
     /**
@@ -195,6 +418,60 @@ class OrderService
     public function countNew(): int
     {
         return Order::query()->where('status', 'new')->count();
+    }
+
+    /**
+     * Report's "Sales by Channel" — grouped by `source`, excluding
+     * cancelled orders (their revenue was already reversed in the ledger,
+     * so counting them here too would double-count the same sale as both
+     * "happened" and "reversed").
+     *
+     * @return array<string, array{count: int, total: float}>
+     */
+    public function sumBySource(): array
+    {
+        return Order::query()
+            ->where('status', '!=', 'cancelled')
+            ->selectRaw('source, count(*) as count, sum(total_amount) as total')
+            ->groupBy('source')
+            ->get()
+            ->mapWithKeys(fn ($row) => [
+                $row->source => ['count' => (int) $row->count, 'total' => (float) $row->total],
+            ])
+            ->all();
+    }
+
+    /**
+     * Target's `current_amount` — non-cancelled order revenue within a
+     * given calendar month, same cancelled-orders exclusion reasoning as
+     * sumBySource().
+     *
+     * @param  string  $yearMonth  'YYYY-MM'
+     */
+    public function sumRevenueForPeriod(string $yearMonth): float
+    {
+        return (float) Order::query()
+            ->where('status', '!=', 'cancelled')
+            ->whereRaw("DATE_FORMAT(created_at, '%Y-%m') = ?", [$yearMonth])
+            ->sum('total_amount');
+    }
+
+    /**
+     * CashierSession's reconciliation — cash POS sales for one outlet
+     * within a time window (the session's opened_at to now/closed_at).
+     * Every POS sale currently pays via Cash (see posSale()'s
+     * `paymentLedgerCode: 'CASH'`) — if a payment-method selector is ever
+     * added to POS, this should filter to cash-paid orders specifically
+     * rather than all POS sales.
+     */
+    public function sumPosSalesForOutlet(int $outletId, string $from, string $to): float
+    {
+        return (float) Order::query()
+            ->where('outlet_id', $outletId)
+            ->where('source', 'pos')
+            ->where('status', '!=', 'cancelled')
+            ->whereBetween('created_at', [$from, $to])
+            ->sum('total_amount');
     }
 
     /**
@@ -255,6 +532,8 @@ class OrderService
                 ->performedOn($order)
                 ->event('updated')
                 ->log("Order {$order->order_number} status changed to '{$order->status}'");
+
+            $this->notifyCustomerOfStatusChange($order);
         } elseif ($order->wasChanged('notes')) {
             activity('order')
                 ->performedOn($order)
@@ -266,11 +545,31 @@ class OrderService
     }
 
     /**
+     * Only fires for a registered customer (a linked user_id) — a guest
+     * order has no account to notify. Best-effort: never blocks the
+     * status update itself if something's off with the customer lookup.
+     */
+    private function notifyCustomerOfStatusChange(Order $order): void
+    {
+        $customer = $this->customerService->findForAdmin($order->customer_id);
+        if ($customer->user_id !== null) {
+            $this->notificationService->notify(
+                $customer->user_id,
+                'order_status_changed',
+                "Your order {$order->order_number} status changed to '{$order->status}'.",
+            );
+        }
+    }
+
+    /**
      * POST /admin/orders/{id}/cancel — the only way an order's status ever
      * becomes `cancelled`. Restocks every line item's quantity (reversing
-     * checkout()'s decrementForOrder() calls) inside the same transaction
-     * as the status change, so a restock can never happen without the
-     * order actually ending up cancelled, or vice versa.
+     * checkout()'s decrementForOrder() calls) and reverses the revenue/COGS
+     * ledger posting from createOrder() — both inside the same transaction
+     * as the status change, so neither side effect can happen without the
+     * order actually ending up cancelled, or vice versa. Without the
+     * ledger reversal, a cancelled order would permanently overstate
+     * recognized revenue.
      *
      * @throws InvalidOrderTransitionException  if the order's current status isn't in CANCELLABLE_STATUSES
      */
@@ -285,8 +584,24 @@ class OrderService
 
             $order->loadMissing('items');
 
+            $totalCost = 0.0;
             foreach ($order->items as $item) {
-                $this->inventoryService->restockForOrder($item->product_id, $item->quantity);
+                $this->inventoryService->restockForOrder($item->product_id, $item->quantity, Order::class, $order->id);
+                $totalCost += (float) $item->unit_buying_price * $item->quantity;
+            }
+
+            $paymentLedgerCode = $order->source === 'pos' ? 'CASH' : 'AR';
+            $outlet = $order->outlet_id !== null ? $this->outletService->findOrFail($order->outlet_id) : null;
+            $this->reverseSaleLedger($order, $totalCost, $paymentLedgerCode, $outlet?->cost_center_id);
+
+            // Give back the coupon use a cancelled order consumed — without
+            // this, a maxUses-limited coupon is permanently burned by an
+            // order that never actually happened, denying that use to
+            // every future customer for no reason. Found via deep-test:
+            // checking out with a maxUses=1 coupon then cancelling left
+            // the coupon unusable forever.
+            if ($order->coupon_id !== null) {
+                $this->couponService->unredeemById($order->coupon_id);
             }
 
             $order->status = 'cancelled';

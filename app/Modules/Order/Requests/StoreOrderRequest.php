@@ -30,6 +30,7 @@ class StoreOrderRequest extends FormRequest
             'items' => ['required', 'array', 'min:1'],
             'items.*.productId' => ['required', 'integer'],
             'items.*.quantity' => ['required', 'integer', 'min:1'],
+            'couponCode' => ['nullable', 'string', 'max:50'],
         ];
     }
 }

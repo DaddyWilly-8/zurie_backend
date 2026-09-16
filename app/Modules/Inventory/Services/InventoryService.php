@@ -4,6 +4,7 @@ namespace App\Modules\Inventory\Services;
 
 use App\Modules\Inventory\Exceptions\InsufficientStockException;
 use App\Modules\Inventory\Models\Inventory;
+use App\Modules\Inventory\Models\InventoryMovement;
 
 class InventoryService
 {
@@ -50,6 +51,24 @@ class InventoryService
     }
 
     /**
+     * Report's low-stock alert list — every product manually flagged
+     * LOW_STOCK (there's no auto quantity threshold, same caveat as
+     * everywhere else this status is mentioned). Returns raw
+     * product_id/quantity pairs; Report combines this with ProductService
+     * for names rather than this module reaching into Product's table.
+     *
+     * @return array<int, array{productId: int, quantity: int}>
+     */
+    public function lowStock(): array
+    {
+        return Inventory::query()
+            ->where('stock_status', 'LOW_STOCK')
+            ->get(['product_id', 'quantity'])
+            ->map(fn ($row) => ['productId' => $row->product_id, 'quantity' => $row->quantity])
+            ->all();
+    }
+
+    /**
      * Called by DeleteInventoryRecord (reacting to Product's ProductDeleted
      * event) when a product is deleted — product_id has no FK/cascade, so
      * without this the inventory row would be left behind permanently,
@@ -69,6 +88,7 @@ class InventoryService
     public function update(int $productId, array $data): Inventory
     {
         $inventory = $this->provisionForProduct($productId);
+        $previousQuantity = $inventory->quantity;
 
         if (array_key_exists('quantity', $data)) {
             $inventory->quantity = (int) $data['quantity'];
@@ -90,6 +110,14 @@ class InventoryService
         }
 
         $inventory->save();
+
+        // Admin-initiated quantity change (not a side effect of an order) —
+        // record it as an "adjustment" movement so the ledger captures why
+        // stock moved, same as every other quantity change in the system.
+        $delta = $inventory->quantity - $previousQuantity;
+        if ($delta !== 0) {
+            $this->recordMovement($productId, 'adjustment', $delta);
+        }
 
         // Logged here only, not via a LogsActivity trait on the Inventory
         // model — decrementForOrder()/restockForOrder() also call save(),
@@ -151,8 +179,12 @@ class InventoryService
      *
      * @throws InsufficientStockException  if the requested quantity exceeds what's currently on hand
      */
-    public function decrementForOrder(int $productId, int $quantity): void
-    {
+    public function decrementForOrder(
+        int $productId,
+        int $quantity,
+        ?string $referenceType = null,
+        ?int $referenceId = null,
+    ): void {
         $this->provisionForProduct($productId);
 
         $inventory = Inventory::query()
@@ -173,6 +205,8 @@ class InventoryService
         $inventory->stock_status = $inventory->quantity === 0 ? 'OUT_OF_STOCK' : 'IN_STOCK';
 
         $inventory->save();
+
+        $this->recordMovement($productId, 'sale', -$quantity, referenceType: $referenceType, referenceId: $referenceId);
     }
 
     /**
@@ -186,8 +220,12 @@ class InventoryService
      * Must be called from inside a DB::transaction() started by the
      * caller, same requirement as decrementForOrder().
      */
-    public function restockForOrder(int $productId, int $quantity): void
-    {
+    public function restockForOrder(
+        int $productId,
+        int $quantity,
+        ?string $referenceType = null,
+        ?int $referenceId = null,
+    ): void {
         $this->provisionForProduct($productId);
 
         $inventory = Inventory::query()
@@ -203,6 +241,63 @@ class InventoryService
         $inventory->stock_status = $inventory->quantity === 0 ? 'OUT_OF_STOCK' : 'IN_STOCK';
 
         $inventory->save();
+
+        $this->recordMovement($productId, 'sale_reversal', $quantity, referenceType: $referenceType, referenceId: $referenceId);
+    }
+
+    /**
+     * Stock-in from a received Purchase — same lockForUpdate() pattern as
+     * restockForOrder(), different movement `type` so the ledger
+     * distinguishes "customer returned/order cancelled" from "we bought
+     * more stock." Must be called from inside the caller's DB::transaction(),
+     * same requirement as every other method here.
+     */
+    public function receivePurchase(
+        int $productId,
+        int $quantity,
+        ?string $referenceType = null,
+        ?int $referenceId = null,
+    ): void {
+        $this->provisionForProduct($productId);
+
+        $inventory = Inventory::query()
+            ->where('product_id', $productId)
+            ->lockForUpdate()
+            ->first();
+
+        $inventory->quantity += $quantity;
+        $inventory->stock_status = $inventory->quantity === 0 ? 'OUT_OF_STOCK' : 'IN_STOCK';
+        $inventory->save();
+
+        $this->recordMovement($productId, 'purchase', $quantity, referenceType: $referenceType, referenceId: $referenceId);
+    }
+
+    /**
+     * Writes one append-only row to the movements ledger — never updated or
+     * deleted afterward. `inventory.quantity` remains the fast-read cached
+     * balance; this is the audit trail it's derived from. See
+     * Zurie_V2_Architecture_Design (2).md §12/§35 (Phase 0.5). Must be
+     * called from inside the same transaction as the balance change it
+     * describes, same requirement as the lockForUpdate() calls above.
+     */
+    private function recordMovement(
+        int $productId,
+        string $type,
+        int $quantityDelta,
+        ?string $reason = null,
+        ?string $referenceType = null,
+        ?int $referenceId = null,
+        ?int $createdBy = null,
+    ): void {
+        InventoryMovement::create([
+            'product_id' => $productId,
+            'type' => $type,
+            'quantity' => $quantityDelta,
+            'reason' => $reason,
+            'reference_type' => $referenceType,
+            'reference_id' => $referenceId,
+            'created_by' => $createdBy,
+        ]);
     }
 
     /**

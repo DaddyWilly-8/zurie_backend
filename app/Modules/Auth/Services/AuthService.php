@@ -2,13 +2,18 @@
 
 namespace App\Modules\Auth\Services;
 
+use App\Modules\Auth\Models\Role;
 use App\Modules\Auth\Models\User;
+use App\Modules\Customer\Services\CustomerService;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
 use Illuminate\Validation\ValidationException;
 
 class AuthService
 {
+    public function __construct(private readonly CustomerService $customerService) {}
+
     /**
      * Sanctum SPA cookie auth: establishes the session cookie, no token returned.
      */
@@ -24,6 +29,53 @@ class AuthService
 
         /** @var User $user */
         $user = Auth::guard('web')->user();
+
+        return $user->load('roles.permissions');
+    }
+
+    /**
+     * Public storefront signup — always creates a `customer`-role User
+     * (never grants any admin permission), links/merges a Customer record
+     * (see CustomerService::linkAccount() for the guest-history-merge
+     * behavior), and logs the new account in immediately, same session
+     * mechanism as attempt(). Never optional/skippable at checkout — see
+     * Zurie_V2_Architecture_Design (2)'s Customer Architecture: signup is
+     * always available, never mandatory to complete a purchase.
+     *
+     * Wrapped in a transaction — without it, a phone-number collision in
+     * linkAccount() (the customers.phone unique constraint) would leave a
+     * committed User row with no linked Customer behind, permanently
+     * burning that email on a registration report as failed. Bug found
+     * and fixed in testing: RegisterRequest also validates the phone isn't
+     * already claimed, so this is defense in depth against a race, not
+     * the only guard.
+     *
+     * @param  array<string, mixed>  $data  name, email, password, phone, whatsappNumber?
+     */
+    public function register(array $data): User
+    {
+        $user = DB::transaction(function () use ($data) {
+            $user = User::create([
+                'name' => $data['name'],
+                'email' => $data['email'],
+                'password' => Hash::make($data['password']),
+            ]);
+
+            $customerRole = Role::where('name', 'customer')->firstOrFail();
+            $user->roles()->attach($customerRole->id);
+
+            $this->customerService->linkAccount($user->id, [
+                'name' => $data['name'],
+                'phone' => $data['phone'],
+                'whatsapp_number' => $data['whatsappNumber'] ?? null,
+                'email' => $data['email'],
+            ]);
+
+            return $user;
+        });
+
+        Auth::guard('web')->login($user);
+        request()->session()->regenerate();
 
         return $user->load('roles.permissions');
     }

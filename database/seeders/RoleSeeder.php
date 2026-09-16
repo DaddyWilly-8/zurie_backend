@@ -20,6 +20,12 @@ class RoleSeeder extends Seeder
             'super_admin' => 'Full system access',
             'admin' => 'Day-to-day store administration',
             'staff' => 'Limited operational access',
+            // No admin permissions granted — this role only identifies a
+            // storefront customer who has created an account (reuses the
+            // same users/auth/Sanctum stack rather than a parallel customer
+            // auth system). See Zurie_V2_Architecture_Design (2).md
+            // "Customer Architecture" revision / §36.
+            'customer' => 'Registered storefront customer account',
         ];
     }
 

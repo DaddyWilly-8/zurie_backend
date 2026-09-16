@@ -12,6 +12,7 @@ use Illuminate\Support\Facades\Route;
 // instead of it — the generic one was never enough on its own to stop
 // sustained password guessing. See zurie-backend-security-audit.md, item #1.
 Route::post('auth/login', [AuthController::class, 'login'])->middleware('throttle:login');
+Route::post('auth/register', [AuthController::class, 'register']);
 Route::post('auth/forgot-password', [AuthController::class, 'forgotPassword']);
 Route::post('auth/reset-password', [AuthController::class, 'resetPassword']);
 

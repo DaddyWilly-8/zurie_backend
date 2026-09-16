@@ -1,14 +1,31 @@
 <?php
 
 use App\Modules\Activity\Providers\ActivityModuleServiceProvider;
+use App\Modules\Account\Providers\AccountModuleServiceProvider;
 use App\Modules\Auth\Providers\AuthModuleServiceProvider;
+use App\Modules\CashierSession\Providers\CashierSessionModuleServiceProvider;
+use App\Modules\Coupon\Providers\CouponModuleServiceProvider;
 use App\Modules\Customer\Providers\CustomerModuleServiceProvider;
 use App\Modules\Dashboard\Providers\DashboardModuleServiceProvider;
+use App\Modules\Enquiry\Providers\EnquiryModuleServiceProvider;
+use App\Modules\Expense\Providers\ExpenseModuleServiceProvider;
+use App\Modules\Faq\Providers\FaqModuleServiceProvider;
+use App\Modules\Finance\Providers\FinanceModuleServiceProvider;
 use App\Modules\Inventory\Providers\InventoryModuleServiceProvider;
 use App\Modules\Media\Providers\MediaModuleServiceProvider;
+use App\Modules\Notification\Providers\NotificationModuleServiceProvider;
 use App\Modules\Order\Providers\OrderModuleServiceProvider;
+use App\Modules\Outlet\Providers\OutletModuleServiceProvider;
+use App\Modules\Pos\Providers\PosModuleServiceProvider;
+use App\Modules\PriceList\Providers\PriceListModuleServiceProvider;
 use App\Modules\Product\Providers\ProductModuleServiceProvider;
+use App\Modules\Purchase\Providers\PurchaseModuleServiceProvider;
+use App\Modules\Report\Providers\ReportModuleServiceProvider;
+use App\Modules\Review\Providers\ReviewModuleServiceProvider;
 use App\Modules\Settings\Providers\SettingsModuleServiceProvider;
+use App\Modules\Supplier\Providers\SupplierModuleServiceProvider;
+use App\Modules\Target\Providers\TargetModuleServiceProvider;
+use App\Modules\Wishlist\Providers\WishlistModuleServiceProvider;
 use App\Providers\AppServiceProvider;
 
 return [
@@ -22,4 +39,21 @@ return [
     DashboardModuleServiceProvider::class,
     ActivityModuleServiceProvider::class,
     SettingsModuleServiceProvider::class,
+    FinanceModuleServiceProvider::class,
+    OutletModuleServiceProvider::class,
+    PriceListModuleServiceProvider::class,
+    AccountModuleServiceProvider::class,
+    SupplierModuleServiceProvider::class,
+    PurchaseModuleServiceProvider::class,
+    PosModuleServiceProvider::class,
+    ReportModuleServiceProvider::class,
+    ExpenseModuleServiceProvider::class,
+    TargetModuleServiceProvider::class,
+    FaqModuleServiceProvider::class,
+    EnquiryModuleServiceProvider::class,
+    CashierSessionModuleServiceProvider::class,
+    WishlistModuleServiceProvider::class,
+    ReviewModuleServiceProvider::class,
+    NotificationModuleServiceProvider::class,
+    CouponModuleServiceProvider::class,
 ];

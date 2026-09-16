@@ -1,6 +1,11 @@
 <?php
 
 use App\Modules\Auth\Middleware\EnsurePermission;
+use App\Modules\CashierSession\Exceptions\CashierSessionAlreadyClosedException;
+use App\Modules\CashierSession\Exceptions\CashierSessionAlreadyOpenException;
+use App\Modules\CashierSession\Exceptions\NoOpenCashierSessionException;
+use App\Modules\Coupon\Exceptions\InvalidCouponException;
+use App\Modules\Finance\Exceptions\UnbalancedJournalEntryException;
 use App\Modules\Inventory\Exceptions\InsufficientStockException;
 use App\Modules\Order\Exceptions\InvalidOrderTransitionException;
 use Illuminate\Auth\Access\AuthorizationException;
@@ -101,6 +106,42 @@ return Application::configure(basePath: dirname(__DIR__))
                     'success' => false,
                     'message' => $e->getMessage(),
                 ], 422);
+            }
+
+            // Cashier session state violations (opening a second session on
+            // an outlet that already has one open, closing an already-
+            // closed session, or reconciling an outlet with no open
+            // session) — expected, preventable admin actions, not server
+            // errors, same treatment as InvalidOrderTransitionException.
+            if ($e instanceof CashierSessionAlreadyOpenException
+                || $e instanceof CashierSessionAlreadyClosedException
+                || $e instanceof NoOpenCashierSessionException) {
+                return response()->json([
+                    'success' => false,
+                    'message' => $e->getMessage(),
+                ], 422);
+            }
+
+            // An invalid/expired/exhausted coupon code applied at checkout
+            // — expected, preventable customer action, not a server error.
+            if ($e instanceof InvalidCouponException) {
+                return response()->json([
+                    'success' => false,
+                    'message' => $e->getMessage(),
+                ], 422);
+            }
+
+            // A journal entry whose debits and credits don't sum to the same
+            // total — never written to the database (checked before the
+            // transaction starts), so this always indicates a bug in the
+            // caller assembling the lines, not a data-integrity problem to
+            // recover from. 500, not 422 — this isn't a preventable user
+            // action like the two exceptions above.
+            if ($e instanceof UnbalancedJournalEntryException) {
+                return response()->json([
+                    'success' => false,
+                    'message' => config('app.debug') ? $e->getMessage() : 'Internal Server Error.',
+                ], 500);
             }
 
             // Same-module FK constraint violations (e.g. deleting a Category

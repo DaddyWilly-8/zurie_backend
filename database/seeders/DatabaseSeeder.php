@@ -18,6 +18,10 @@ class DatabaseSeeder extends Seeder
             PermissionSeeder::class,
             RoleSeeder::class,
             UserSeeder::class,
+            ChartOfAccountsSeeder::class,
+            CostCenterSeeder::class,
+            SalesOutletSeeder::class,
+            PriceListSeeder::class,
         ]);
     }
 }

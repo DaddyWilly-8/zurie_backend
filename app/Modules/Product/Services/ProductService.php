@@ -45,6 +45,24 @@ class ProductService
     }
 
     /**
+     * Batched name lookup for other modules' cross-module read pattern
+     * (e.g. Report combining Inventory's low-stock product ids with a
+     * human-readable name) — same "one query, not one per product" shape
+     * as InventoryService::getStatusForProducts().
+     *
+     * @param  array<int, int>  $productIds
+     * @return array<int, string>  productId => name
+     */
+    public function namesFor(array $productIds): array
+    {
+        if (empty($productIds)) {
+            return [];
+        }
+
+        return Product::query()->whereIn('id', $productIds)->pluck('name', 'id')->all();
+    }
+
+    /**
      * Order's checkout flow calls this for every line item to pull
      * authoritative, current pricing server-side — never trusts a
      * client-sent price/name. Restricted to `status: published`, same

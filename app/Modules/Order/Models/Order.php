@@ -14,7 +14,11 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
     'whatsapp_number',
     'customer_email',
     'status',
+    'source',
+    'outlet_id',
     'total_amount',
+    'discount_amount',
+    'coupon_id',
     'notes',
 ])]
 class Order extends Model
@@ -23,6 +27,7 @@ class Order extends Model
     {
         return [
             'total_amount' => 'decimal:2',
+            'discount_amount' => 'decimal:2',
         ];
     }
 
