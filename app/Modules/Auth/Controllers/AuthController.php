@@ -12,7 +12,9 @@ use App\Modules\Auth\Services\AuthService;
 use App\Support\Http\ApiResponse;
 use Illuminate\Auth\Events\PasswordReset;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Password;
+use Laravel\Socialite\Facades\Socialite;
 
 class AuthController extends Controller
 {
@@ -39,6 +41,43 @@ class AuthController extends Controller
         $user = $this->authService->register($request->validated());
 
         return $this->created(new AuthUserResource($user));
+    }
+
+    /**
+     * GET /auth/google/redirect — a full browser navigation (not an XHR:
+     * the caller is a plain <a href> in the frontend, never apiClient),
+     * since establishing the session cookie at the end of this round trip
+     * only works if the browser itself follows the whole redirect chain.
+     * See AuthController::handleGoogleCallback() and AuthService::
+     * loginOrRegisterViaSocialite().
+     */
+    public function redirectToGoogle()
+    {
+        return Socialite::driver('google')->redirect();
+    }
+
+    /**
+     * GET /auth/google/callback — Google lands the browser here directly
+     * (it's the configured GOOGLE_REDIRECT_URI), not the frontend. Ends by
+     * bouncing the now-authenticated browser on to the frontend, session
+     * cookie already set, rather than returning JSON — there's no XHR
+     * caller waiting on this response to parse.
+     */
+    public function handleGoogleCallback()
+    {
+        $frontendUrl = rtrim(config('app.frontend_url'), '/');
+
+        try {
+            $socialiteUser = Socialite::driver('google')->user();
+        } catch (\Throwable $exception) {
+            Log::warning('Google OAuth callback failed', ['message' => $exception->getMessage()]);
+
+            return redirect("{$frontendUrl}/login?error=google_failed");
+        }
+
+        $this->authService->loginOrRegisterViaSocialite('google', $socialiteUser);
+
+        return redirect("{$frontendUrl}/account");
     }
 
     public function logout()
