@@ -4,6 +4,7 @@ namespace App\Modules\Finance\Services;
 
 use App\Modules\Finance\Models\CostCenter;
 use Illuminate\Database\Eloquent\Collection;
+use Illuminate\Validation\ValidationException;
 
 /**
  * Separate from FinanceService — that one owns ledger/journal posting,
@@ -41,5 +42,41 @@ class CostCenterService
     public function findOrFail(int $id): CostCenter
     {
         return CostCenter::query()->findOrFail($id);
+    }
+
+    /**
+     * @param  array<string, mixed>  $data  name?, parentId?
+     *
+     * @throws ValidationException  if parentId would make the cost center its own parent
+     */
+    public function update(CostCenter $costCenter, array $data): CostCenter
+    {
+        $parentId = array_key_exists('parentId', $data) ? $data['parentId'] : $costCenter->parent_id;
+
+        if ($parentId === $costCenter->id) {
+            throw ValidationException::withMessages([
+                'parentId' => ['A cost center cannot be its own parent.'],
+            ]);
+        }
+
+        $costCenter->update([
+            'name' => $data['name'] ?? $costCenter->name,
+            'parent_id' => $parentId,
+        ]);
+
+        return $costCenter;
+    }
+
+    /**
+     * "Delete" deactivates rather than removing the row — a hard delete
+     * would orphan every historical JournalEntryLine.cost_center_id
+     * pointing at this cost center. Reactivation is the same call with
+     * isActive: true.
+     */
+    public function setActive(CostCenter $costCenter, bool $isActive): CostCenter
+    {
+        $costCenter->update(['is_active' => $isActive]);
+
+        return $costCenter;
     }
 }

@@ -39,9 +39,47 @@ class OutletService
         return SalesOutlet::query()->where('is_active', true)->orderBy('name')->get();
     }
 
+    /**
+     * Every outlet regardless of is_active — for the admin list, which
+     * needs to show (and let an admin reactivate) deactivated outlets too,
+     * unlike allActive()'s callers (Order/POS, which should never let a
+     * checkout resolve to a deactivated outlet).
+     */
+    public function all(): Collection
+    {
+        return SalesOutlet::query()->orderBy('name')->get();
+    }
+
     public function findOrFail(int $id): SalesOutlet
     {
         return SalesOutlet::query()->findOrFail($id);
+    }
+
+    /**
+     * @param  array<string, mixed>  $data  name?, type?, address?, costCenterId?
+     */
+    public function update(SalesOutlet $outlet, array $data): SalesOutlet
+    {
+        $outlet->update([
+            'name' => $data['name'] ?? $outlet->name,
+            'type' => $data['type'] ?? $outlet->type,
+            'address' => array_key_exists('address', $data) ? $data['address'] : $outlet->address,
+            'cost_center_id' => array_key_exists('costCenterId', $data) ? $data['costCenterId'] : $outlet->cost_center_id,
+        ]);
+
+        return $outlet;
+    }
+
+    /**
+     * "Delete" deactivates rather than removing the row — a hard delete
+     * would orphan every historical Order.outlet_id pointing at this
+     * outlet. Reactivation is the same call with isActive: true.
+     */
+    public function setActive(SalesOutlet $outlet, bool $isActive): SalesOutlet
+    {
+        $outlet->update(['is_active' => $isActive]);
+
+        return $outlet;
     }
 
     /**

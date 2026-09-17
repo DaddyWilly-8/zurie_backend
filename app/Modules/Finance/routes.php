@@ -13,6 +13,10 @@ Route::middleware('auth:sanctum')->group(function (): void {
 
     Route::get('admin/finance/cost-centers', [CostCenterController::class, 'index'])
         ->middleware('permission:finance_view');
+    Route::get('admin/finance/cost-centers/{costCenter}', [CostCenterController::class, 'show'])
+        ->middleware('permission:finance_view');
     Route::post('admin/finance/cost-centers', [CostCenterController::class, 'store'])
+        ->middleware('permission:finance_manage');
+    Route::patch('admin/finance/cost-centers/{costCenter}', [CostCenterController::class, 'update'])
         ->middleware('permission:finance_manage');
 });
