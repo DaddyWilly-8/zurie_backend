@@ -109,4 +109,39 @@ class PriceListService
             ['price' => $price, 'sale_price' => $salePrice]
         );
     }
+
+    public function findOrFail(int $id): PriceList
+    {
+        return PriceList::query()->with('items')->findOrFail($id);
+    }
+
+    /**
+     * @param  array<string, mixed>  $data  name?, outletId?, customerId?, validFrom?, validTo?, isActive?
+     */
+    public function update(PriceList $priceList, array $data): PriceList
+    {
+        $priceList->update([
+            'name' => $data['name'] ?? $priceList->name,
+            'outlet_id' => array_key_exists('outletId', $data) ? $data['outletId'] : $priceList->outlet_id,
+            'customer_id' => array_key_exists('customerId', $data) ? $data['customerId'] : $priceList->customer_id,
+            'valid_from' => array_key_exists('validFrom', $data) ? $data['validFrom'] : $priceList->valid_from,
+            'valid_to' => array_key_exists('validTo', $data) ? $data['validTo'] : $priceList->valid_to,
+            'is_active' => array_key_exists('isActive', $data) ? $data['isActive'] : $priceList->is_active,
+        ]);
+
+        return $priceList;
+    }
+
+    /**
+     * Removes one product's override from a price list — the counterpart
+     * to setItem()'s upsert. Resolution simply falls through to the next
+     * tier (PriceListService::resolvePrice()'s customer -> outlet ->
+     * default chain) once removed, nothing else to reconcile.
+     */
+    public function removeItem(PriceList $priceList, int $productId): void
+    {
+        PriceListItem::where('price_list_id', $priceList->id)
+            ->where('product_id', $productId)
+            ->delete();
+    }
 }
