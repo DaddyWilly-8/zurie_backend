@@ -69,13 +69,21 @@ class AuthController extends Controller
 
         try {
             $socialiteUser = Socialite::driver('google')->user();
+            $this->authService->loginOrRegisterViaSocialite('google', $socialiteUser);
         } catch (\Throwable $exception) {
-            Log::warning('Google OAuth callback failed', ['message' => $exception->getMessage()]);
+            // Logs the exception class too, not just getMessage() — some
+            // exception types (Socialite's InvalidStateException among
+            // them) are thrown with a deliberately empty message, which
+            // made an earlier version of this log line useless for telling
+            // "session/state mismatch" apart from any other failure mode.
+            Log::warning('Google OAuth callback failed', [
+                'exception' => get_class($exception),
+                'message' => $exception->getMessage(),
+                'trace' => $exception->getTraceAsString(),
+            ]);
 
             return redirect("{$frontendUrl}/login?error=google_failed");
         }
-
-        $this->authService->loginOrRegisterViaSocialite('google', $socialiteUser);
 
         return redirect("{$frontendUrl}/account");
     }
