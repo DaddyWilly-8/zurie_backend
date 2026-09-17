@@ -18,9 +18,21 @@ Route::post('auth/reset-password', [AuthController::class, 'resetPassword']);
 
 // Plain browser-navigated GETs, not XHR — see AuthController::
 // redirectToGoogle()'s docblock for why these can't be POST/JSON like the
-// routes above.
-Route::get('auth/google/redirect', [AuthController::class, 'redirectToGoogle']);
-Route::get('auth/google/callback', [AuthController::class, 'handleGoogleCallback']);
+// routes above. Forced into the `web` middleware group (unconditional
+// StartSession) rather than relying on `api`'s statefulApi(), which only
+// attaches session middleware when EnsureFrontendRequestsAreStateful
+// recognizes the request's Origin/Referer as our frontend. That check
+// passes for /redirect (Referer is our own frontend page), but NOT for
+// /callback — Google's own redirect back to us carries Referer:
+// accounts.google.com, not localhost:3000/zurie.co.tz, so the stateful
+// check would never fire and session()->regenerate() inside
+// AuthService::loginOrRegisterViaSocialite() would throw "Session store
+// not set on request." `web`'s own CSRF check doesn't apply here (GET
+// requests are exempt from VerifyCsrfToken regardless).
+Route::middleware('web')->group(function (): void {
+    Route::get('auth/google/redirect', [AuthController::class, 'redirectToGoogle']);
+    Route::get('auth/google/callback', [AuthController::class, 'handleGoogleCallback']);
+});
 
 Route::middleware('auth:sanctum')->group(function (): void {
     Route::post('auth/logout', [AuthController::class, 'logout']);
