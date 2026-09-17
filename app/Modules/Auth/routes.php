@@ -5,6 +5,7 @@ use App\Modules\Auth\Controllers\PermissionController;
 use App\Modules\Auth\Controllers\RoleController;
 use App\Modules\Auth\Controllers\UserController;
 use Illuminate\Support\Facades\Route;
+use Laravel\Sanctum\Http\Middleware\EnsureFrontendRequestsAreStateful;
 
 // Public auth flow — session/cookie based (Sanctum SPA), no bearer token.
 // `throttle:login` (5/min, keyed by email+IP — see AppServiceProvider) is
@@ -29,7 +30,20 @@ Route::post('auth/reset-password', [AuthController::class, 'resetPassword']);
 // AuthService::loginOrRegisterViaSocialite() would throw "Session store
 // not set on request." `web`'s own CSRF check doesn't apply here (GET
 // requests are exempt from VerifyCsrfToken regardless).
-Route::middleware('web')->group(function (): void {
+//
+// EnsureFrontendRequestsAreStateful is explicitly stripped back out —
+// these routes are still loaded via routes/api.php, so `api`'s group
+// (which statefulApi() adds this to) still applies underneath `web`
+// unless excluded. Leaving both active bootstraps TWO independent
+// session-handling passes on the same request (this `web` group's own
+// StartSession, plus Sanctum's own conditionally-pushed one whenever the
+// Origin/Referer happens to match SANCTUM_STATEFUL_DOMAINS — which it
+// does for our own frontend's Referer on /redirect). That double
+// bootstrap is what broke Socialite's state round-trip in production:
+// InvalidStateException started appearing only after the `web` group was
+// added, where it hadn't before — see AuthController::
+// handleGoogleCallback()'s log line, which is what surfaced this.
+Route::middleware('web')->withoutMiddleware(EnsureFrontendRequestsAreStateful::class)->group(function (): void {
     Route::get('auth/google/redirect', [AuthController::class, 'redirectToGoogle']);
     Route::get('auth/google/callback', [AuthController::class, 'handleGoogleCallback']);
 });
