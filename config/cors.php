@@ -9,7 +9,7 @@ return [
     |
     | This was a known, documented gap (zurie-backend-implementation-spec.md
     | §18) — without it, cookie-based cross-origin auth between the frontend
-    | (zurie.co.tz / zurie.vercel.app) and this API (api.zurie.co.tz) fails
+    | (zurie.co.tz) and this API (api.zurie.co.tz) fails
     | even with SANCTUM_STATEFUL_DOMAINS set correctly, since that config
     | only governs Sanctum's own auth handling, not the browser's separate
     | CORS check. `paths` is scoped to the API surface only — no reason to
