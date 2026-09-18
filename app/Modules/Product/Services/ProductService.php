@@ -440,6 +440,8 @@ class ProductService
             'shortDescription' => 'short_description',
             'categoryId' => 'category_id',
             'sku' => 'sku',
+            'measurementUnitId' => 'measurement_unit_id',
+            'vatExempted' => 'vat_exempted',
             'buyingPrice' => 'buying_price',
             'price' => 'price',
             'salePrice' => 'sale_price',
@@ -467,6 +469,7 @@ class ProductService
                 'featured' => false,
                 'best_seller' => false,
                 'new_arrival' => false,
+                'vat_exempted' => false,
             ];
         }
 

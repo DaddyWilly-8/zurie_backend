@@ -3,6 +3,7 @@
 namespace App\Modules\Order\Services;
 
 use App\Modules\Coupon\Services\CouponService;
+use App\Modules\Currency\Services\CurrencyService;
 use App\Modules\Customer\Services\CustomerService;
 use App\Modules\Finance\Services\FinanceService;
 use App\Modules\Inventory\Services\InventoryService;
@@ -13,6 +14,7 @@ use App\Modules\Outlet\Models\SalesOutlet;
 use App\Modules\Outlet\Services\OutletService;
 use App\Modules\PriceList\Services\PriceListService;
 use App\Modules\Product\Services\ProductService;
+use App\Modules\Vat\Services\VatService;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Facades\DB;
@@ -61,6 +63,8 @@ class OrderService
         private readonly FinanceService $financeService,
         private readonly NotificationService $notificationService,
         private readonly CouponService $couponService,
+        private readonly CurrencyService $currencyService,
+        private readonly VatService $vatService,
     ) {}
 
     /**
@@ -117,6 +121,7 @@ class OrderService
             causedByAnonymous: true,
             activityLabel: fn (Order $order) => "Guest checkout — Order {$order->order_number} placed",
             couponCode: $data['couponCode'] ?? null,
+            currencyId: $data['currencyId'] ?? null,
         );
     }
 
@@ -161,6 +166,7 @@ class OrderService
             causedByAnonymous: false,
             activityLabel: fn (Order $order) => "POS sale — Order {$order->order_number} completed at {$outlet->name}",
             couponCode: $data['couponCode'] ?? null,
+            currencyId: $data['currencyId'] ?? null,
         );
     }
 
@@ -185,17 +191,32 @@ class OrderService
         \Closure $activityLabel,
         ?int $existingCustomerId = null,
         ?string $couponCode = null,
+        ?int $currencyId = null,
     ): Order {
         return DB::transaction(function () use (
             $customerData, $items, $source, $outlet, $status,
-            $paymentLedgerCode, $causedByAnonymous, $activityLabel, $existingCustomerId, $couponCode,
+            $paymentLedgerCode, $causedByAnonymous, $activityLabel, $existingCustomerId, $couponCode, $currencyId,
         ) {
             $customer = $existingCustomerId !== null
                 ? $this->customerService->findForAdmin($existingCustomerId)
                 : $this->customerService->findOrCreate($customerData);
 
+            // Defaults to the base currency at its current rate when the
+            // caller doesn't specify one — every existing checkout/POS
+            // call still posts in implicit base-currency terms, unchanged
+            // from before Currency existed.
+            $currency = $currencyId !== null
+                ? $this->currencyService->findOrFail($currencyId)
+                : $this->currencyService->base();
+            $exchangeRate = $this->currencyService->latestRateFor($currency);
+
             $order = Order::create([
                 'customer_id' => $customer->id,
+                // Phase C (Stakeholder merge) — Customer now IS a
+                // stakeholders row (see Customer model docblock), so
+                // $customer->id already is the stakeholder id; no separate
+                // lookup/mirror needed. See Zurie_V3_ProsERP_Adaptation_Plan.md.
+                'stakeholder_id' => $customer->id,
                 'customer_name' => $customer->name,
                 'customer_phone' => $customer->phone,
                 'whatsapp_number' => $customer->whatsapp_number,
@@ -204,6 +225,8 @@ class OrderService
                 'source' => $source,
                 'outlet_id' => $outlet->id,
                 'total_amount' => 0,
+                'currency_id' => $currency->id,
+                'exchange_rate' => $exchangeRate,
             ]);
 
             // order_number is derived from the row's own auto-increment id,
@@ -217,6 +240,7 @@ class OrderService
 
             $totalRevenue = 0.0;
             $totalCost = 0.0;
+            $totalVat = 0.0;
 
             foreach ($items as $line) {
                 $product = $this->productService->findActiveForOrder($line['productId']);
@@ -245,6 +269,15 @@ class OrderService
                 $totalRevenue += $lineTotal;
                 $totalCost += $lineCost;
 
+                // Phase E (VAT/Tax) — system-computed only, never trusted
+                // from the client, same "authoritative pricing only" rule
+                // this method already applies to price/name/cost — see
+                // config/zurie.php's docblock for why this isn't a
+                // client-supplied field.
+                $vatPercentage = $product->vat_exempted ? 0.0 : (float) config('zurie.default_vat_percentage');
+                $vatAmount = $lineTotal * $vatPercentage / 100;
+                $totalVat += $vatAmount;
+
                 $order->items()->create([
                     'product_id' => $product->id,
                     'product_name' => $product->name,
@@ -252,6 +285,8 @@ class OrderService
                     'unit_selling_price' => $unitSellingPrice,
                     'quantity' => $line['quantity'],
                     'line_total' => $lineTotal,
+                    'vat_percentage' => $vatPercentage,
+                    'vat_amount' => $vatAmount,
                 ]);
             }
 
@@ -271,6 +306,7 @@ class OrderService
             $order->update([
                 'total_amount' => $totalRevenue - $discount,
                 'discount_amount' => $discount,
+                'vat_amount' => $totalVat,
                 'coupon_id' => $coupon?->id,
             ]);
 
@@ -278,7 +314,11 @@ class OrderService
                 $this->couponService->redeem($coupon);
             }
 
-            $this->postSaleToLedger($order, $totalRevenue, $discount, $totalCost, $outlet->cost_center_id, $paymentLedgerCode);
+            $this->postSaleToLedger($order, $totalRevenue, $discount, $totalCost, $totalVat, $outlet->cost_center_id, $paymentLedgerCode, $currency->id, $exchangeRate);
+
+            if ($totalVat > 0) {
+                $this->vatService->record($order, 'output', $totalVat);
+            }
 
             // Logged manually, not via Order having the LogsActivity trait
             // — this method issues 3+ separate saves (create, order_number
@@ -306,7 +346,7 @@ class OrderService
      * (Phase 5) falls straight out of the ledger. See
      * Zurie_V2_Architecture_Design (2).md §30.2/§34's worked example.
      */
-    private function postSaleToLedger(Order $order, float $grossRevenue, float $discount, float $cost, ?int $costCenterId, string $paymentLedgerCode): void
+    private function postSaleToLedger(Order $order, float $grossRevenue, float $discount, float $cost, float $vat, ?int $costCenterId, string $paymentLedgerCode, ?int $currencyId = null, ?float $exchangeRate = null): void
     {
         $paymentLedger = $this->financeService->systemLedger($paymentLedgerCode);
         $sales = $this->financeService->systemLedger('SALES');
@@ -314,7 +354,10 @@ class OrderService
         $inventoryAsset = $this->financeService->systemLedger('INV-ASSET');
 
         $lines = [
-            ['ledger_id' => $paymentLedger->id, 'type' => 'debit', 'amount' => $grossRevenue - $discount, 'cost_center_id' => $costCenterId],
+            // The customer pays gross - discount + VAT; VAT is a liability
+            // owed to the government, not revenue, so it's credited to
+            // VAT Output rather than Sales Account.
+            ['ledger_id' => $paymentLedger->id, 'type' => 'debit', 'amount' => $grossRevenue - $discount + $vat, 'cost_center_id' => $costCenterId],
             ['ledger_id' => $sales->id, 'type' => 'credit', 'amount' => $grossRevenue, 'cost_center_id' => $costCenterId],
             ['ledger_id' => $cogs->id, 'type' => 'debit', 'amount' => $cost, 'cost_center_id' => $costCenterId],
             ['ledger_id' => $inventoryAsset->id, 'type' => 'credit', 'amount' => $cost, 'cost_center_id' => $costCenterId],
@@ -325,11 +368,18 @@ class OrderService
             $lines[] = ['ledger_id' => $salesDiscounts->id, 'type' => 'debit', 'amount' => $discount, 'cost_center_id' => $costCenterId];
         }
 
+        if ($vat > 0) {
+            $vatOutput = $this->financeService->systemLedger('VAT-OUT');
+            $lines[] = ['ledger_id' => $vatOutput->id, 'type' => 'credit', 'amount' => $vat, 'cost_center_id' => $costCenterId];
+        }
+
         $this->financeService->postEntry(
             $lines,
             narration: "Order {$order->order_number}",
             referenceType: Order::class,
             referenceId: $order->id,
+            currencyId: $currencyId,
+            exchangeRate: $exchangeRate,
         );
     }
 
@@ -345,6 +395,7 @@ class OrderService
     private function reverseSaleLedger(Order $order, float $cost, string $paymentLedgerCode, ?int $costCenterId): void
     {
         $discount = (float) $order->discount_amount;
+        $vat = (float) $order->vat_amount;
         $grossRevenue = (float) $order->total_amount + $discount;
 
         $paymentLedger = $this->financeService->systemLedger($paymentLedgerCode);
@@ -354,7 +405,7 @@ class OrderService
 
         $lines = [
             ['ledger_id' => $sales->id, 'type' => 'debit', 'amount' => $grossRevenue, 'cost_center_id' => $costCenterId],
-            ['ledger_id' => $paymentLedger->id, 'type' => 'credit', 'amount' => $grossRevenue - $discount, 'cost_center_id' => $costCenterId],
+            ['ledger_id' => $paymentLedger->id, 'type' => 'credit', 'amount' => $grossRevenue - $discount + $vat, 'cost_center_id' => $costCenterId],
             ['ledger_id' => $inventoryAsset->id, 'type' => 'debit', 'amount' => $cost, 'cost_center_id' => $costCenterId],
             ['ledger_id' => $cogs->id, 'type' => 'credit', 'amount' => $cost, 'cost_center_id' => $costCenterId],
         ];
@@ -364,11 +415,23 @@ class OrderService
             $lines[] = ['ledger_id' => $salesDiscounts->id, 'type' => 'credit', 'amount' => $discount, 'cost_center_id' => $costCenterId];
         }
 
+        if ($vat > 0) {
+            $vatOutput = $this->financeService->systemLedger('VAT-OUT');
+            $lines[] = ['ledger_id' => $vatOutput->id, 'type' => 'debit', 'amount' => $vat, 'cost_center_id' => $costCenterId];
+        }
+
         $this->financeService->postEntry(
             $lines,
             narration: "Cancellation of Order {$order->order_number}",
             referenceType: Order::class,
             referenceId: $order->id,
+            // Reverses in the exact currency/rate the order was originally
+            // posted in — read from the order's own stored columns, not
+            // re-resolved to whatever the base currency is *now* (which
+            // could theoretically have changed via designateBase() between
+            // the sale and its cancellation).
+            currencyId: $order->currency_id,
+            exchangeRate: $order->exchange_rate !== null ? (float) $order->exchange_rate : null,
         );
     }
 

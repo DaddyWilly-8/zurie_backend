@@ -6,7 +6,7 @@ use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
-#[Fillable(['journal_entry_id', 'ledger_id', 'cost_center_id', 'type', 'amount'])]
+#[Fillable(['journal_entry_id', 'ledger_id', 'type', 'amount'])]
 class JournalEntryLine extends Model
 {
     protected function casts(): array
@@ -26,8 +26,6 @@ class JournalEntryLine extends Model
         return $this->belongsTo(Ledger::class);
     }
 
-    public function costCenter(): BelongsTo
-    {
-        return $this->belongsTo(CostCenter::class);
-    }
+    // No costCenter() here anymore — cost centers are tagged on the whole
+    // JournalEntry, not per line. See JournalEntry::costCenters().
 }

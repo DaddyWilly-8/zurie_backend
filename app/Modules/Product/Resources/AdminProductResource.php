@@ -26,6 +26,8 @@ class AdminProductResource extends JsonResource
             'shortDescription' => $this->short_description,
             'categoryId' => $this->category_id,
             'sku' => $this->sku,
+            'measurementUnitId' => $this->measurement_unit_id,
+            'vatExempted' => (bool) $this->vat_exempted,
             'buyingPrice' => (float) $this->buying_price,
             'price' => (float) $this->price,
             'salePrice' => $this->sale_price !== null ? (float) $this->sale_price : null,

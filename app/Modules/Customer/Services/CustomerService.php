@@ -6,6 +6,20 @@ use App\Modules\Customer\Models\Customer;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Pagination\LengthAwarePaginator;
 
+/**
+ * Phase C (Stakeholder merge) — Customer now shares its physical table
+ * (`stakeholders`) with Supplier. Every method below is scoped to
+ * `is_customer_role = true` for *listing/lookup-by-id* purposes (so a
+ * supplier-only row never shows up as a customer to an admin), but the
+ * dedup lookups in findOrCreate()/linkAccount() deliberately search
+ * *all* stakeholders regardless of role — if a real person is both a
+ * walk-in customer and a supplier sharing the same phone number, that's
+ * one real-world entity and should resolve to one row, not two. Whenever
+ * a match is found (new or existing), `is_customer_role` is explicitly
+ * set true on it — including when the match started life as a
+ * supplier-only row — since firstOrCreate()'s second argument only
+ * applies on actual creation, not on an existing match.
+ */
 class CustomerService
 {
     /**
@@ -25,38 +39,40 @@ class CustomerService
      */
     public function findOrCreate(array $data, ?int $userId = null): Customer
     {
-        if ($userId !== null) {
-            return Customer::firstOrCreate(
-                ['user_id' => $userId],
-                [
-                    'name' => $data['name'],
-                    'phone' => $data['phone'],
-                    'whatsapp_number' => $data['whatsapp_number'] ?? null,
-                    'email' => $data['email'] ?? null,
-                ]
-            );
+        // is_active/is_customer_role set explicitly rather than left to
+        // the DB column default — Eloquent's create() doesn't reload
+        // DB-applied defaults into the in-memory model (same bug class
+        // fixed repeatedly elsewhere in this codebase).
+        $defaults = [
+            'name' => $data['name'],
+            'whatsapp_number' => $data['whatsapp_number'] ?? null,
+            'email' => $data['email'] ?? null,
+            'is_active' => true,
+            'is_customer_role' => true,
+        ];
+
+        $customer = $userId !== null
+            ? Customer::firstOrCreate(['user_id' => $userId], $defaults + ['phone' => $data['phone']])
+            : Customer::firstOrCreate(['phone' => $data['phone']], $defaults);
+
+        if (! $customer->is_customer_role) {
+            $customer->update(['is_customer_role' => true]);
         }
 
-        return Customer::firstOrCreate(
-            ['phone' => $data['phone']],
-            [
-                'name' => $data['name'],
-                'whatsapp_number' => $data['whatsapp_number'] ?? null,
-                'email' => $data['email'] ?? null,
-            ]
-        );
+        return $customer;
     }
 
     public function paginateAdmin(int $page, int $pageSize): LengthAwarePaginator
     {
         return Customer::query()
+            ->where('is_customer_role', true)
             ->orderByDesc('id')
             ->paginate($pageSize, ['*'], 'page', $page);
     }
 
     public function findForAdmin(int $id): Customer
     {
-        return Customer::query()->findOrFail($id);
+        return Customer::query()->where('is_customer_role', true)->findOrFail($id);
     }
 
     /**
@@ -75,12 +91,20 @@ class CustomerService
     {
         $existing = Customer::where('user_id', $userId)->first();
         if ($existing !== null) {
+            if (! $existing->is_customer_role) {
+                $existing->update(['is_customer_role' => true]);
+            }
+
             return $existing;
         }
 
+        // Deliberately not scoped to is_customer_role here — matches any
+        // stakeholder by phone with no login yet, including one that
+        // started life as a supplier-only row (same real-world-identity
+        // reasoning as findOrCreate() above).
         $guestMatch = Customer::where('phone', $data['phone'])->whereNull('user_id')->first();
         if ($guestMatch !== null) {
-            $guestMatch->update(['user_id' => $userId, 'name' => $data['name']]);
+            $guestMatch->update(['user_id' => $userId, 'name' => $data['name'], 'is_customer_role' => true]);
 
             return $guestMatch;
         }
@@ -91,12 +115,14 @@ class CustomerService
             'phone' => $data['phone'],
             'whatsapp_number' => $data['whatsapp_number'] ?? null,
             'email' => $data['email'] ?? null,
+            'is_active' => true,
+            'is_customer_role' => true,
         ]);
     }
 
     public function findByUserId(int $userId): ?Customer
     {
-        return Customer::where('user_id', $userId)->first();
+        return Customer::where('user_id', $userId)->where('is_customer_role', true)->first();
     }
 
     /**
@@ -108,6 +134,6 @@ class CustomerService
      */
     public function recent(int $limit = 5): Collection
     {
-        return Customer::query()->latest()->limit($limit)->get();
+        return Customer::query()->where('is_customer_role', true)->latest()->limit($limit)->get();
     }
 }

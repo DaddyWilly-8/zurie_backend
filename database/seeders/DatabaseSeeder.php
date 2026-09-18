@@ -18,6 +18,7 @@ class DatabaseSeeder extends Seeder
             PermissionSeeder::class,
             RoleSeeder::class,
             UserSeeder::class,
+            CurrencySeeder::class,
             ChartOfAccountsSeeder::class,
             CostCenterSeeder::class,
             SalesOutletSeeder::class,

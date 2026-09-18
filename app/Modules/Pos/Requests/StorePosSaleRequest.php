@@ -35,6 +35,7 @@ class StorePosSaleRequest extends FormRequest
             'whatsappNumber' => ['nullable', 'string', 'max:50'],
             'customerEmail' => ['nullable', 'email', 'max:255'],
             'couponCode' => ['nullable', 'string', 'max:50'],
+            'currencyId' => ['nullable', 'integer', 'exists:currencies,id'],
         ];
     }
 }

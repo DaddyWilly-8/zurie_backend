@@ -17,6 +17,8 @@ class PurchaseItemResource extends JsonResource
             'quantity' => $this->quantity,
             'costPrice' => (float) $this->cost_price,
             'lineTotal' => (float) $this->line_total,
+            'vatPercentage' => (float) $this->vat_percentage,
+            'vatAmount' => (float) $this->vat_amount,
         ];
     }
 }

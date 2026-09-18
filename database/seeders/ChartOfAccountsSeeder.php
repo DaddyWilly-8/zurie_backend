@@ -29,6 +29,11 @@ class ChartOfAccountsSeeder extends Seeder
         // settled. POS sales collect payment immediately, so they debit
         // Cash directly instead. See Phase 3 / §35.
         $this->ledger($currentAssets, 'Accounts Receivable', 'AR');
+        // Phase E (VAT/Tax) — VAT paid to suppliers on purchases, reclaimable
+        // from the government; an asset (normal debit balance), same
+        // reasoning as Accounts Receivable being a claim on money owed to
+        // this business rather than an expense.
+        $this->ledger($currentAssets, 'VAT Input', 'VAT-IN');
 
         $liabilities = $this->group('Liabilities', 'LIAB', 'liability');
         // No ledgers seeded here — one Sundry Creditor ledger is created
@@ -36,6 +41,9 @@ class ChartOfAccountsSeeder extends Seeder
         // using this group's code ("CRED") as their code prefix, e.g.
         // "CRED-14" for supplier id 14 — see FinanceService::generateCode().
         $this->group('Sundry Creditors', 'CRED', 'liability', $liabilities->id);
+        // Phase E (VAT/Tax) — VAT collected from customers on sales, owed
+        // to the government; a liability (normal credit balance).
+        $this->ledger($liabilities, 'VAT Output', 'VAT-OUT');
 
         $income = $this->group('Income', 'INCOME', 'income');
         $directIncome = $this->group('Direct Income', 'DIR-INCOME', 'income', $income->id);

@@ -14,6 +14,8 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
     'unit_selling_price',
     'quantity',
     'line_total',
+    'vat_percentage',
+    'vat_amount',
 ])]
 class OrderItem extends Model
 {
@@ -24,6 +26,8 @@ class OrderItem extends Model
             'unit_selling_price' => 'decimal:2',
             'line_total' => 'decimal:2',
             'quantity' => 'integer',
+            'vat_percentage' => 'double',
+            'vat_amount' => 'double',
         ];
     }
 

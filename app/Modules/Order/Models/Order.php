@@ -9,6 +9,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 #[Fillable([
     'order_number',
     'customer_id',
+    'stakeholder_id',
     'customer_name',
     'customer_phone',
     'whatsapp_number',
@@ -18,7 +19,10 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
     'outlet_id',
     'total_amount',
     'discount_amount',
+    'vat_amount',
     'coupon_id',
+    'currency_id',
+    'exchange_rate',
     'notes',
 ])]
 class Order extends Model
@@ -28,6 +32,8 @@ class Order extends Model
         return [
             'total_amount' => 'decimal:2',
             'discount_amount' => 'decimal:2',
+            'vat_amount' => 'decimal:2',
+            'exchange_rate' => 'double',
         ];
     }
 

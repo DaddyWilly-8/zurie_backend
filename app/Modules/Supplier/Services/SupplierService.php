@@ -31,6 +31,7 @@ class SupplierService
             'email' => $data['email'] ?? null,
             'address' => $data['address'] ?? null,
             'is_active' => true,
+            'is_supplier_role' => true,
         ]);
 
         $sundryCreditors = $this->financeService->ledgerGroupByCode('CRED');
@@ -41,12 +42,12 @@ class SupplierService
 
     public function paginateAdmin(int $page, int $pageSize): LengthAwarePaginator
     {
-        return Supplier::query()->orderByDesc('id')->paginate($pageSize, ['*'], 'page', $page);
+        return Supplier::query()->where('is_supplier_role', true)->orderByDesc('id')->paginate($pageSize, ['*'], 'page', $page);
     }
 
     public function findOrFail(int $id): Supplier
     {
-        return Supplier::query()->findOrFail($id);
+        return Supplier::query()->where('is_supplier_role', true)->findOrFail($id);
     }
 
     /**

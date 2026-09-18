@@ -110,6 +110,36 @@ class PermissionSeeder extends Seeder
             // Coupons
             'coupon_view' => 'View coupons',
             'coupon_manage' => 'Create/activate/deactivate coupons',
+
+            // Measurement Units
+            'measurement_unit_view' => 'View measurement units',
+            'measurement_unit_manage' => 'Create/update/deactivate measurement units',
+
+            // Currencies
+            'currency_view' => 'View currencies and exchange rates',
+            'currency_manage' => 'Create/update/deactivate currencies, add exchange rates',
+
+            // Stakeholders (read-only merged view of Customers/Suppliers —
+            // see Zurie_V3_ProsERP_Adaptation_Plan.md, Phase C)
+            'stakeholder_view' => 'View stakeholders',
+
+            // Purchase Orders / GRNs (Phase D)
+            'purchase_order_view' => 'View purchase orders',
+            'purchase_order_create' => 'Create purchase orders',
+            'purchase_order_update' => 'Update, close/reopen, cancel, or delete purchase orders',
+            'grn_view' => 'View goods received notes',
+            'grn_create' => 'Receive goods against a purchase order',
+
+            // VAT (Phase E)
+            'vat_view' => 'View VAT transactions and the input/output summary',
+
+            // Proforma Invoices (Phase F)
+            'proforma_invoice_view' => 'View proforma invoices',
+            'proforma_invoice_manage' => 'Create/update/withdraw proforma invoices',
+
+            // Transaction subtypes: Payment/Receipt/Journal Voucher/Fund Transfer (Phase G)
+            'transaction_view' => 'View payments, receipts, journal vouchers, and fund transfers',
+            'transaction_manage' => 'Create/delete payments, receipts, journal vouchers, and fund transfers',
         ];
     }
 

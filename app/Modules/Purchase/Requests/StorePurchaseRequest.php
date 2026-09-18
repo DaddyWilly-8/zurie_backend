@@ -25,6 +25,7 @@ class StorePurchaseRequest extends FormRequest
             'amountPaid' => ['nullable', 'numeric', 'min:0'],
             'notes' => ['nullable', 'string'],
             'costCenterId' => ['nullable', 'integer', 'exists:cost_centers,id'],
+            'currencyId' => ['nullable', 'integer', 'exists:currencies,id'],
         ];
     }
 }

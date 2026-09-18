@@ -2,6 +2,7 @@
 
 namespace App\Modules\Finance\Services;
 
+use App\Modules\Currency\Services\CurrencyService;
 use App\Modules\Finance\Exceptions\UnbalancedJournalEntryException;
 use App\Modules\Finance\Models\JournalEntry;
 use App\Modules\Finance\Models\Ledger;
@@ -12,6 +13,8 @@ use Illuminate\Support\Facades\DB;
 
 class FinanceService
 {
+    public function __construct(private readonly CurrencyService $currencyService) {}
+
     /**
      * Full chart of accounts, nested two levels deep (top-level group ->
      * sub-group -> its ledgers) to match the seeded default hierarchy
@@ -83,6 +86,8 @@ class FinanceService
         ?int $referenceId = null,
         ?int $createdBy = null,
         ?string $date = null,
+        ?int $currencyId = null,
+        ?float $exchangeRate = null,
     ): JournalEntry {
         // Zero lines trivially satisfies debits === credits (0 === 0)
         // below, which would otherwise let a caller-side bug (an array
@@ -115,27 +120,109 @@ class FinanceService
             throw new UnbalancedJournalEntryException($totalDebits, $totalCredits);
         }
 
-        return DB::transaction(function () use ($lines, $narration, $referenceType, $referenceId, $createdBy, $date) {
+        return DB::transaction(function () use ($lines, $narration, $referenceType, $referenceId, $createdBy, $date, $currencyId, $exchangeRate) {
+            // Defaults to the base currency at rate 1.0 when the caller
+            // doesn't specify one — every existing caller (Order,
+            // Purchase, Expense) still posts in implicit base-currency
+            // terms, unchanged from before Currency existed.
+            $currency = $currencyId !== null
+                ? $this->currencyService->findOrFail($currencyId)
+                : $this->currencyService->base();
+            $resolvedExchangeRate = $exchangeRate ?? $this->currencyService->latestRateFor($currency);
+
             $entry = JournalEntry::create([
                 'date' => $date ?? now()->toDateString(),
                 'narration' => $narration,
                 'reference_type' => $referenceType,
                 'reference_id' => $referenceId,
                 'created_by' => $createdBy,
+                'currency_id' => $currency->id,
+                'exchange_rate' => $resolvedExchangeRate,
             ]);
+
+            // Every line within one postEntry() call has always carried
+            // the same cost_center_id (no caller has ever varied it
+            // per-line) — collected here as the distinct set and attached
+            // to the whole entry via the pivot, not stored per line. See
+            // cost_center_journal_entry's migration.
+            $costCenterIds = [];
 
             foreach ($lines as $line) {
                 $entry->lines()->create([
                     'ledger_id' => $line['ledger_id'],
-                    'cost_center_id' => $line['cost_center_id'] ?? null,
                     'type' => $line['type'],
                     'amount' => $line['amount'],
                 ]);
 
                 $this->applyToLedgerBalance($line['ledger_id'], $line['type'], (float) $line['amount']);
+
+                if (! empty($line['cost_center_id'])) {
+                    $costCenterIds[$line['cost_center_id']] = true;
+                }
             }
 
-            return $entry->load('lines');
+            if ($costCenterIds !== []) {
+                $entry->costCenters()->sync(array_keys($costCenterIds));
+            }
+
+            return $entry->load('lines', 'costCenters');
+        });
+    }
+
+    /**
+     * Phase G (Payment/Receipt/Journal Voucher/Fund Transfer) — the
+     * recurring "one debit ledger, one credit ledger, one amount" shape
+     * every line item across all four transaction subtypes reduces to
+     * (Journal Voucher's own pair per line included). A thin wrapper
+     * around postEntry() so TransactionService doesn't duplicate this
+     * 2-line array shape four times — the doc notes ProsERP itself
+     * duplicates this per-controller; this codebase shouldn't repeat that.
+     */
+    public function postSimpleEntry(
+        int $debitLedgerId,
+        int $creditLedgerId,
+        float $amount,
+        ?string $narration = null,
+        ?string $referenceType = null,
+        ?int $referenceId = null,
+        ?int $currencyId = null,
+        ?float $exchangeRate = null,
+    ): JournalEntry {
+        return $this->postEntry(
+            [
+                ['ledger_id' => $debitLedgerId, 'type' => 'debit', 'amount' => $amount],
+                ['ledger_id' => $creditLedgerId, 'type' => 'credit', 'amount' => $amount],
+            ],
+            narration: $narration,
+            referenceType: $referenceType,
+            referenceId: $referenceId,
+            currencyId: $currencyId,
+            exchangeRate: $exchangeRate,
+        );
+    }
+
+    /**
+     * Phase G — the four Transaction subtypes (Payment/Receipt/Journal
+     * Voucher/Fund Transfer) are the first callers in this codebase that
+     * ever hard-delete a JournalEntry rather than reversing it with a new
+     * opposite entry (Order/Purchase's cancel() flows always post a new
+     * reversing entry instead — see OrderService::reverseSaleLedger()).
+     * A raw `$entry->delete()` would leave `ledgers.current_balance` wrong
+     * forever, since that balance is a running total only ever adjusted by
+     * applyToLedgerBalance() at postEntry() time, never recomputed from
+     * scratch. This applies the exact opposite balance adjustment for
+     * every line before deleting the entry (which cascades its lines via
+     * the FK), so the ledger ends up exactly as if the entry never
+     * existed.
+     */
+    public function deleteEntry(JournalEntry $entry): void
+    {
+        DB::transaction(function () use ($entry) {
+            foreach ($entry->lines as $line) {
+                $this->applyToLedgerBalance($line->ledger_id, $line->type === 'debit' ? 'credit' : 'debit', (float) $line->amount);
+            }
+
+            $entry->delete();
         });
     }
 

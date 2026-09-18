@@ -6,14 +6,16 @@ use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
-#[Fillable(['purchase_number', 'supplier_id', 'total_amount', 'amount_paid', 'notes'])]
+#[Fillable(['purchase_number', 'supplier_id', 'stakeholder_id', 'total_amount', 'vat_amount', 'amount_paid', 'currency_id', 'exchange_rate', 'notes'])]
 class Purchase extends Model
 {
     protected function casts(): array
     {
         return [
             'total_amount' => 'decimal:2',
+            'vat_amount' => 'decimal:2',
             'amount_paid' => 'decimal:2',
+            'exchange_rate' => 'double',
         ];
     }
 

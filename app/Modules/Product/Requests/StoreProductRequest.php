@@ -29,6 +29,8 @@ class StoreProductRequest extends FormRequest
             'shortDescription' => ['nullable', 'string', 'max:500'],
             'categoryId' => ['required', 'integer', 'exists:categories,id'],
             'sku' => ['nullable', 'string', 'max:100', 'unique:products,sku'],
+            'measurementUnitId' => ['nullable', 'integer', 'exists:measurement_units,id'],
+            'vatExempted' => ['nullable', 'boolean'],
             'buyingPrice' => ['required', 'numeric', 'min:0'],
             'price' => ['required', 'numeric', 'min:0'],
             'salePrice' => ['nullable', 'numeric', 'min:0', 'lte:price'],

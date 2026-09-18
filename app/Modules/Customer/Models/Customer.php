@@ -5,10 +5,28 @@ namespace App\Modules\Customer\Models;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Model;
 
-#[Fillable(['user_id', 'name', 'phone', 'whatsapp_number', 'email'])]
+#[Fillable(['user_id', 'name', 'phone', 'whatsapp_number', 'email', 'is_active', 'is_customer_role'])]
 class Customer extends Model
 {
-    protected $table = 'customers';
+    // Phase C (Stakeholder merge, see Zurie_V3_ProsERP_Adaptation_Plan.md)
+    // — this table is now `stakeholders`, the same physical table
+    // Supplier is also mapped onto. One row per real-world entity; a
+    // stakeholder can be a customer, a supplier, or both on the same
+    // row, matching the reference doc's own philosophy that role is a
+    // fact about how a stakeholder is *used*, not a separate record.
+    // `is_customer_role` is what keeps this module's own queries
+    // (paginateAdmin() etc.) scoped to rows actually used as a customer
+    // — see CustomerService for where that's applied and why it's
+    // necessary now that the table is shared.
+    protected $table = 'stakeholders';
+
+    protected function casts(): array
+    {
+        return [
+            'is_active' => 'boolean',
+            'is_customer_role' => 'boolean',
+        ];
+    }
 
     // Deliberately no relation to Order — order_id/customer_id crosses a
     // module boundary. Order stores customer_id with no FK and snapshots

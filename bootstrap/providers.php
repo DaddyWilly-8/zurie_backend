@@ -4,6 +4,7 @@ use App\Modules\Activity\Providers\ActivityModuleServiceProvider;
 use App\Modules\Account\Providers\AccountModuleServiceProvider;
 use App\Modules\Auth\Providers\AuthModuleServiceProvider;
 use App\Modules\CashierSession\Providers\CashierSessionModuleServiceProvider;
+use App\Modules\Currency\Providers\CurrencyModuleServiceProvider;
 use App\Modules\Coupon\Providers\CouponModuleServiceProvider;
 use App\Modules\Customer\Providers\CustomerModuleServiceProvider;
 use App\Modules\Dashboard\Providers\DashboardModuleServiceProvider;
@@ -12,6 +13,11 @@ use App\Modules\Expense\Providers\ExpenseModuleServiceProvider;
 use App\Modules\Faq\Providers\FaqModuleServiceProvider;
 use App\Modules\Finance\Providers\FinanceModuleServiceProvider;
 use App\Modules\Inventory\Providers\InventoryModuleServiceProvider;
+use App\Modules\MeasurementUnit\Providers\MeasurementUnitModuleServiceProvider;
+use App\Modules\Procurement\Providers\ProcurementModuleServiceProvider;
+use App\Modules\ProformaInvoice\Providers\ProformaInvoiceModuleServiceProvider;
+use App\Modules\Transaction\Providers\TransactionModuleServiceProvider;
+use App\Modules\Vat\Providers\VatModuleServiceProvider;
 use App\Modules\Media\Providers\MediaModuleServiceProvider;
 use App\Modules\Notification\Providers\NotificationModuleServiceProvider;
 use App\Modules\Order\Providers\OrderModuleServiceProvider;
@@ -23,6 +29,7 @@ use App\Modules\Purchase\Providers\PurchaseModuleServiceProvider;
 use App\Modules\Report\Providers\ReportModuleServiceProvider;
 use App\Modules\Review\Providers\ReviewModuleServiceProvider;
 use App\Modules\Settings\Providers\SettingsModuleServiceProvider;
+use App\Modules\Stakeholder\Providers\StakeholderModuleServiceProvider;
 use App\Modules\Supplier\Providers\SupplierModuleServiceProvider;
 use App\Modules\Target\Providers\TargetModuleServiceProvider;
 use App\Modules\Wishlist\Providers\WishlistModuleServiceProvider;
@@ -56,4 +63,11 @@ return [
     ReviewModuleServiceProvider::class,
     NotificationModuleServiceProvider::class,
     CouponModuleServiceProvider::class,
+    MeasurementUnitModuleServiceProvider::class,
+    CurrencyModuleServiceProvider::class,
+    StakeholderModuleServiceProvider::class,
+    ProcurementModuleServiceProvider::class,
+    VatModuleServiceProvider::class,
+    ProformaInvoiceModuleServiceProvider::class,
+    TransactionModuleServiceProvider::class,
 ];

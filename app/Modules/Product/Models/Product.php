@@ -16,6 +16,8 @@ use Spatie\Activitylog\Support\LogOptions;
     'short_description',
     'category_id',
     'sku',
+    'measurement_unit_id',
+    'vat_exempted',
     'buying_price',
     'price',
     'sale_price',
@@ -58,6 +60,7 @@ class Product extends Model
             'featured' => 'boolean',
             'best_seller' => 'boolean',
             'new_arrival' => 'boolean',
+            'vat_exempted' => 'boolean',
         ];
     }
 

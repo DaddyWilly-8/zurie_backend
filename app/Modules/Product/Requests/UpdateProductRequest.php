@@ -31,6 +31,8 @@ class UpdateProductRequest extends FormRequest
             'shortDescription' => ['nullable', 'string', 'max:500'],
             'categoryId' => ['sometimes', 'required', 'integer', 'exists:categories,id'],
             'sku' => ['nullable', 'string', 'max:100', Rule::unique('products', 'sku')->ignore($product)],
+            'measurementUnitId' => ['nullable', 'integer', 'exists:measurement_units,id'],
+            'vatExempted' => ['nullable', 'boolean'],
             'buyingPrice' => ['sometimes', 'required', 'numeric', 'min:0'],
             'price' => ['sometimes', 'required', 'numeric', 'min:0'],
             'salePrice' => ['nullable', 'numeric', 'min:0', function ($attribute, $value, $fail) use ($product): void {
