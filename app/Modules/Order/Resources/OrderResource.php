@@ -37,6 +37,7 @@ class OrderResource extends JsonResource
             'exchangeRate' => $this->exchange_rate !== null ? (float) $this->exchange_rate : null,
             'notes' => $this->notes,
             'items' => $this->whenLoaded('items', fn () => $this->items->map(fn ($item) => [
+                'id' => $item->id,
                 'productId' => $item->product_id,
                 'productName' => $item->product_name,
                 'quantity' => $item->quantity,

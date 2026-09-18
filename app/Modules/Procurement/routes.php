@@ -8,6 +8,7 @@ Route::middleware('auth:sanctum')->group(function (): void {
     Route::get('admin/purchase-orders', [PurchaseOrderController::class, 'index'])->middleware('permission:purchase_order_view');
     Route::post('admin/purchase-orders', [PurchaseOrderController::class, 'store'])->middleware('permission:purchase_order_create');
     Route::get('admin/purchase-orders/{id}', [PurchaseOrderController::class, 'show'])->middleware('permission:purchase_order_view');
+    Route::get('admin/purchase-orders/{id}/payments', [PurchaseOrderController::class, 'payments'])->middleware('permission:purchase_order_view');
     Route::patch('admin/purchase-orders/{id}', [PurchaseOrderController::class, 'update'])->middleware('permission:purchase_order_update');
     Route::delete('admin/purchase-orders/{id}', [PurchaseOrderController::class, 'destroy'])->middleware('permission:purchase_order_update');
     Route::post('admin/purchase-orders/{id}/close', [PurchaseOrderController::class, 'close'])->middleware('permission:purchase_order_update');

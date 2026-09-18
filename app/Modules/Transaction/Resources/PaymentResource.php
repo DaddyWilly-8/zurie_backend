@@ -26,6 +26,10 @@ class PaymentResource extends JsonResource
                 'amount' => (float) $item->amount,
                 'journalEntryId' => $item->journal_entry_id,
             ])),
+            'purchaseOrders' => $this->whenLoaded('purchaseOrders', fn () => $this->purchaseOrders->map(fn ($link) => [
+                'purchaseOrderId' => $link->purchase_order_id,
+                'amountApplied' => (float) $link->amount_applied,
+            ])),
             'createdAt' => $this->created_at?->toISOString(),
         ];
     }

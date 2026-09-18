@@ -497,6 +497,29 @@ class OrderService
      *
      * @return array<string, array{count: int, total: float}>
      */
+    /**
+     * Debtors report's data source — every stakeholder's total order
+     * value (excluding cancelled orders), keyed by stakeholder id. The
+     * report itself (ReportService::debtors()) subtracts each
+     * stakeholder's applied Receipts to get the actual outstanding
+     * balance — this method only sums the "billed" side, deliberately
+     * not the settled side, since Receipt is a different module's
+     * concern (Extensibility Constitution, Rule 2).
+     *
+     * @return array<int, float>  stakeholderId => totalOrderValue
+     */
+    public function totalsByStakeholder(): array
+    {
+        return Order::query()
+            ->where('status', '!=', 'cancelled')
+            ->whereNotNull('stakeholder_id')
+            ->selectRaw('stakeholder_id, sum(total_amount) as total')
+            ->groupBy('stakeholder_id')
+            ->pluck('total', 'stakeholder_id')
+            ->map(fn ($total) => (float) $total)
+            ->all();
+    }
+
     public function sumBySource(): array
     {
         return Order::query()

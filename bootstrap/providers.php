@@ -16,6 +16,8 @@ use App\Modules\Inventory\Providers\InventoryModuleServiceProvider;
 use App\Modules\MeasurementUnit\Providers\MeasurementUnitModuleServiceProvider;
 use App\Modules\Procurement\Providers\ProcurementModuleServiceProvider;
 use App\Modules\ProformaInvoice\Providers\ProformaInvoiceModuleServiceProvider;
+use App\Modules\Delivery\Providers\DeliveryModuleServiceProvider;
+use App\Modules\InventoryTransfer\Providers\InventoryTransferModuleServiceProvider;
 use App\Modules\Transaction\Providers\TransactionModuleServiceProvider;
 use App\Modules\Vat\Providers\VatModuleServiceProvider;
 use App\Modules\Media\Providers\MediaModuleServiceProvider;
@@ -70,4 +72,6 @@ return [
     VatModuleServiceProvider::class,
     ProformaInvoiceModuleServiceProvider::class,
     TransactionModuleServiceProvider::class,
+    DeliveryModuleServiceProvider::class,
+    InventoryTransferModuleServiceProvider::class,
 ];

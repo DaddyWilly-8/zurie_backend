@@ -196,6 +196,25 @@ class PurchaseOrderService
         return PurchaseOrder::query()->with('items')->orderByDesc('id')->paginate($pageSize, ['*'], 'page', $page);
     }
 
+    /**
+     * Purchase Values report's data source — total PO value grouped by
+     * status, so an admin can see pending vs. fully received value at a
+     * glance without paginating through every PO.
+     *
+     * @return array<string, array{count: int, total: float}>
+     */
+    public function totalsByStatus(): array
+    {
+        return PurchaseOrder::query()
+            ->selectRaw('status, count(*) as count, sum(total_amount) as total')
+            ->groupBy('status')
+            ->get()
+            ->mapWithKeys(fn ($row) => [
+                $row->status => ['count' => (int) $row->count, 'total' => (float) $row->total],
+            ])
+            ->all();
+    }
+
     public function findOrFail(int $id): PurchaseOrder
     {
         return PurchaseOrder::query()->with(['items', 'grns'])->findOrFail($id);

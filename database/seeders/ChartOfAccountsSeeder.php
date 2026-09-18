@@ -58,6 +58,12 @@ class ChartOfAccountsSeeder extends Seeder
         $expenses = $this->group('Expenses', 'EXPENSE', 'expense');
         $directExpenses = $this->group('Direct Expenses', 'DIR-EXP', 'expense', $expenses->id);
         $this->ledger($directExpenses, 'Cost of Goods Sold', 'COGS');
+        // Inventory Transfers (multi-store initiative) — an "external"
+        // transfer takes stock permanently out of the business (to a
+        // franchisee, another legal entity, disposal), unlike an
+        // "internal" transfer between two of our own outlets, which has
+        // no ledger effect at all (same asset, different location).
+        $this->ledger($directExpenses, 'Inventory Write-off', 'INV-WRITEOFF');
         // Indirect Expenses sub-group exists but starts empty — one ledger
         // per expense category (Rent, Salaries, Utilities) is created
         // on demand in Phase 5 (V2.1), same on-demand pattern as suppliers.

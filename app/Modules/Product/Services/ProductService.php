@@ -63,6 +63,27 @@ class ProductService
     }
 
     /**
+     * Batched buying-price lookup — the Inventory Value report's
+     * valuation basis (quantity × buying price, matching COGS's own
+     * costing basis rather than selling price).
+     *
+     * @param  array<int, int>  $productIds
+     * @return array<int, float>  productId => buyingPrice
+     */
+    public function buyingPricesFor(array $productIds): array
+    {
+        if (empty($productIds)) {
+            return [];
+        }
+
+        return Product::query()
+            ->whereIn('id', $productIds)
+            ->pluck('buying_price', 'id')
+            ->map(fn ($price) => (float) $price)
+            ->all();
+    }
+
+    /**
      * Order's checkout flow calls this for every line item to pull
      * authoritative, current pricing server-side — never trusts a
      * client-sent price/name. Restricted to `status: published`, same

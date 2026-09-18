@@ -266,6 +266,59 @@ class FinanceService
     }
 
     /**
+     * Every ledger, split into its debit/credit column based on the same
+     * normal-balance rule applyToLedgerBalance() already applies when
+     * posting — `current_balance` is a single signed running total, not
+     * separately-tracked debit/credit totals, so a trial balance derives
+     * which column it belongs in from the ledger's own nature (and
+     * is_contra flip) rather than storing that distinction twice.
+     * Debits and credits are guaranteed to sum equal by construction,
+     * since postEntry() never allows an unbalanced entry through.
+     *
+     * @return array<int, array{ledgerId: int, name: string, code: string, groupName: string, debit: float, credit: float}>
+     */
+    public function trialBalance(): array
+    {
+        return Ledger::query()
+            ->with('group')
+            ->get()
+            ->map(function (Ledger $ledger) {
+                $balance = (float) $ledger->current_balance;
+                $normalBalanceIsDebit = in_array($ledger->group->nature, ['asset', 'expense'], true);
+                if ($ledger->is_contra) {
+                    $normalBalanceIsDebit = ! $normalBalanceIsDebit;
+                }
+
+                return [
+                    'ledgerId' => $ledger->id,
+                    'name' => $ledger->name,
+                    'code' => $ledger->code,
+                    'groupName' => $ledger->group->name,
+                    'debit' => $normalBalanceIsDebit ? max(0, $balance) : max(0, -$balance),
+                    'credit' => $normalBalanceIsDebit ? max(0, -$balance) : max(0, $balance),
+                ];
+            })
+            ->all();
+    }
+
+    /**
+     * Creditors report's data source — every Supplier's payable ledger
+     * balance, keyed by stakeholder id (Supplier and Stakeholder are the
+     * same physical row post-Phase-C, so this id is directly usable as a
+     * stakeholder id by the caller).
+     *
+     * @return array<int, float>  supplierId => currentBalance
+     */
+    public function payableBalancesBySupplier(): array
+    {
+        return Ledger::query()
+            ->where('reference_type', \App\Modules\Supplier\Models\Supplier::class)
+            ->pluck('current_balance', 'reference_id')
+            ->map(fn ($balance) => (float) $balance)
+            ->all();
+    }
+
+    /**
      * Looks up a seeded system ledger by its fixed code (e.g. "CASH",
      * "INV-ASSET") — the cross-module lookup other modules use instead of
      * querying the Ledger model directly (Extensibility Constitution,
@@ -274,6 +327,72 @@ class FinanceService
     public function systemLedger(string $code): Ledger
     {
         return Ledger::where('code', $code)->firstOrFail();
+    }
+
+    /**
+     * Assets = Liabilities + Equity, at any point in time — not just at a
+     * period boundary, since this codebase never posts closing entries
+     * (income/expense ledgers just keep accumulating). To balance without
+     * closing entries, undistributed net profit (income ledgers' normal
+     * balance minus expense ledgers') is folded into Equity as "Retained
+     * Earnings (Current Period)" — the standard treatment for a live,
+     * un-closed balance sheet. Every amount uses the same normal-balance
+     * sign convention as trialBalance(): positive is "in this nature's
+     * own direction" (an asset's normal debit balance shown positive, a
+     * liability's normal credit balance shown positive), so summing
+     * within a nature never requires the caller to know debit/credit.
+     *
+     * @return array{
+     *     assets: array{total: float, groups: array<string, array{ledgerId: int, name: string, code: string, balance: float}[]>},
+     *     liabilities: array{total: float, groups: array<string, array{ledgerId: int, name: string, code: string, balance: float}[]>},
+     *     equity: array{total: float, groups: array<string, array{ledgerId: int, name: string, code: string, balance: float}[]>, retainedEarnings: float},
+     *     isBalanced: bool,
+     * }
+     */
+    public function balanceSheet(): array
+    {
+        $ledgers = Ledger::query()->with('group')->get();
+
+        $buckets = ['asset' => [], 'liability' => [], 'equity' => []];
+        $totals = ['asset' => 0.0, 'liability' => 0.0, 'equity' => 0.0];
+        $netIncome = 0.0;
+
+        foreach ($ledgers as $ledger) {
+            $nature = $ledger->group->nature;
+            // applyToLedgerBalance() already stores current_balance in
+            // "normal direction positive" form for the ledger's own
+            // nature (contra flip included at write time) — the same
+            // fact trialBalance() relies on. No re-derivation or sign
+            // flip needed here; using the raw value directly is correct.
+            $balance = abs((float) $ledger->current_balance) < 0.005 ? 0.0 : (float) $ledger->current_balance;
+
+            $row = [
+                'ledgerId' => $ledger->id,
+                'name' => $ledger->name,
+                'code' => $ledger->code,
+                'balance' => $balance,
+            ];
+
+            if (in_array($nature, ['asset', 'liability', 'equity'], true)) {
+                $buckets[$nature][$ledger->group->name][] = $row;
+                $totals[$nature] += $balance;
+            } elseif ($nature === 'income') {
+                $netIncome += $balance;
+            } elseif ($nature === 'expense') {
+                $netIncome -= $balance;
+            }
+        }
+
+        return [
+            'assets' => ['total' => $totals['asset'], 'groups' => $buckets['asset']],
+            'liabilities' => ['total' => $totals['liability'], 'groups' => $buckets['liability']],
+            'equity' => [
+                'total' => $totals['equity'] + $netIncome,
+                'groups' => $buckets['equity'],
+                'retainedEarnings' => $netIncome,
+            ],
+            'isBalanced' => abs($totals['asset'] - ($totals['liability'] + $totals['equity'] + $netIncome)) < 0.01,
+        ];
     }
 
     /**

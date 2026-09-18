@@ -131,6 +131,10 @@ class PermissionSeeder extends Seeder
             'grn_create' => 'Receive goods against a purchase order',
             'grn_manage' => 'Un-receive (delete) a GRN, reversing its stock and ledger effect',
 
+            // Inventory Transfers (multi-store initiative)
+            'inventory_transfer_view' => 'View inventory transfers between stores',
+            'inventory_transfer_create' => 'Create inventory transfers (internal/external/cost-center-change)',
+
             // VAT (Phase E)
             'vat_view' => 'View VAT transactions and the input/output summary',
 

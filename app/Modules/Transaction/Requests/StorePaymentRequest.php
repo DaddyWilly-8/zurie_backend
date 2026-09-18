@@ -24,6 +24,9 @@ class StorePaymentRequest extends FormRequest
             'items' => ['required', 'array', 'min:1'],
             'items.*.debitLedgerId' => ['required', 'integer', 'exists:ledgers,id'],
             'items.*.amount' => ['required', 'numeric', 'min:0.01'],
+            'purchaseOrders' => ['nullable', 'array'],
+            'purchaseOrders.*.purchaseOrderId' => ['required_with:purchaseOrders', 'integer', 'exists:purchase_orders,id'],
+            'purchaseOrders.*.amountApplied' => ['required_with:purchaseOrders', 'numeric', 'min:0.01'],
         ];
     }
 }

@@ -7,6 +7,7 @@ use App\Modules\Finance\Services\FinanceService;
 use App\Modules\Transaction\Models\FundTransfer;
 use App\Modules\Transaction\Models\JournalVoucher;
 use App\Modules\Transaction\Models\Payment;
+use App\Modules\Transaction\Models\PaymentPurchaseOrder;
 use App\Modules\Transaction\Models\Receipt;
 use App\Modules\Transaction\Models\ReceiptOrder;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
@@ -39,7 +40,7 @@ class TransactionService
     // ---------------------------------------------------------------
 
     /**
-     * @param  array<string, mixed>  $data  transactionDate?, reference?, narration?, creditLedgerId, items: array<{debitLedgerId, amount}>
+     * @param  array<string, mixed>  $data  transactionDate?, reference?, narration?, creditLedgerId, items: array<{debitLedgerId, amount}>, purchaseOrders?: array<{purchaseOrderId, amountApplied}>
      */
     public function createPayment(array $data): Payment
     {
@@ -78,20 +79,48 @@ class TransactionService
                 ]);
             }
 
+            foreach ($data['purchaseOrders'] ?? [] as $link) {
+                PaymentPurchaseOrder::create([
+                    'payment_id' => $payment->id,
+                    'purchase_order_id' => $link['purchaseOrderId'],
+                    'amount_applied' => $link['amountApplied'],
+                ]);
+            }
+
             $payment->update(['total_amount' => $total]);
 
-            return $payment->load('items');
+            return $payment->load(['items', 'purchaseOrders']);
         });
+    }
+
+    /**
+     * Every Payment applied against one Purchase Order, via the
+     * `payment_purchase_order` pivot — the Purchase Order's Payments tab.
+     *
+     * @return \Illuminate\Support\Collection<int, array{paymentId: int, paymentNumber: string, amountApplied: float, transactionDate: string}>
+     */
+    public function paymentsForPurchaseOrder(int $purchaseOrderId): \Illuminate\Support\Collection
+    {
+        return PaymentPurchaseOrder::query()
+            ->where('purchase_order_id', $purchaseOrderId)
+            ->with('payment')
+            ->get()
+            ->map(fn (PaymentPurchaseOrder $link) => [
+                'paymentId' => $link->payment->id,
+                'paymentNumber' => $link->payment->payment_number,
+                'amountApplied' => (float) $link->amount_applied,
+                'transactionDate' => $link->payment->transaction_date->toDateString(),
+            ]);
     }
 
     public function paginatePayments(int $page, int $pageSize): LengthAwarePaginator
     {
-        return Payment::query()->with('items')->orderByDesc('id')->paginate($pageSize, ['*'], 'page', $page);
+        return Payment::query()->with(['items', 'purchaseOrders'])->orderByDesc('id')->paginate($pageSize, ['*'], 'page', $page);
     }
 
     public function findPayment(int $id): Payment
     {
-        return Payment::query()->with('items')->findOrFail($id);
+        return Payment::query()->with(['items', 'purchaseOrders'])->findOrFail($id);
     }
 
     /** Always deletes its journals first, unconditionally — see FinanceService::deleteEntry()'s docblock. */
@@ -175,6 +204,50 @@ class TransactionService
     public function findReceipt(int $id): Receipt
     {
         return Receipt::query()->with(['items', 'sales'])->findOrFail($id);
+    }
+
+    /**
+     * Every Receipt applied against one Order, via the `receipt_order`
+     * pivot — the Order detail view's Receipts tab. `order_id` has no FK
+     * (cross-module reference, see ReceiptOrder's docblock), so this is a
+     * plain query rather than an Eloquent relationship traversal.
+     *
+     * @return \Illuminate\Support\Collection<int, array{receiptId: int, receiptNumber: string, amountApplied: float, transactionDate: string}>
+     */
+    public function receiptsForOrder(int $orderId): \Illuminate\Support\Collection
+    {
+        return ReceiptOrder::query()
+            ->where('order_id', $orderId)
+            ->with('receipt')
+            ->get()
+            ->map(fn (ReceiptOrder $link) => [
+                'receiptId' => $link->receipt->id,
+                'receiptNumber' => $link->receipt->receipt_number,
+                'amountApplied' => (float) $link->amount_applied,
+                'transactionDate' => $link->receipt->transaction_date->toDateString(),
+            ]);
+    }
+
+    /**
+     * Debtors report's settled-side data — every Order-linked Receipt
+     * amount, summed per stakeholder via a raw join against `orders`
+     * (only to read `stakeholder_id`, never written to). Same reasoning
+     * GrnService already sets a precedent for — a read-only cross-module
+     * lookup for reporting isn't worth a round trip through OrderService
+     * for what's fundamentally a join, not a business operation.
+     *
+     * @return array<int, float>  stakeholderId => totalReceiptsApplied
+     */
+    public function receiptsAppliedByStakeholder(): array
+    {
+        return DB::table('receipt_order')
+            ->join('orders', 'orders.id', '=', 'receipt_order.order_id')
+            ->whereNotNull('orders.stakeholder_id')
+            ->selectRaw('orders.stakeholder_id, sum(receipt_order.amount_applied) as total')
+            ->groupBy('orders.stakeholder_id')
+            ->pluck('total', 'stakeholder_id')
+            ->map(fn ($total) => (float) $total)
+            ->all();
     }
 
     /**

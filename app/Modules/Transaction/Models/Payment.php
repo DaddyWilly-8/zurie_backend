@@ -18,4 +18,10 @@ class Payment extends Model
     {
         return $this->hasMany(PaymentItem::class);
     }
+
+    /** N-N — the Purchase Orders this payment settles the payable balance of. No FK; purchase_order_id is a cross-module reference (see PaymentPurchaseOrder's docblock). */
+    public function purchaseOrders(): HasMany
+    {
+        return $this->hasMany(PaymentPurchaseOrder::class);
+    }
 }

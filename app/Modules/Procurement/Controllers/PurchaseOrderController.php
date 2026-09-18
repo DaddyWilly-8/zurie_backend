@@ -8,6 +8,7 @@ use App\Modules\Procurement\Requests\UpdatePurchaseOrderRequest;
 use App\Modules\Procurement\Resources\PurchaseOrderResource;
 use App\Modules\Procurement\Services\GrnService;
 use App\Modules\Procurement\Services\PurchaseOrderService;
+use App\Modules\Transaction\Services\TransactionService;
 use App\Support\Http\ApiResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -19,6 +20,7 @@ class PurchaseOrderController extends Controller
     public function __construct(
         private readonly PurchaseOrderService $purchaseOrderService,
         private readonly GrnService $grnService,
+        private readonly TransactionService $transactionService,
     ) {}
 
     public function index(Request $request)
@@ -73,6 +75,12 @@ class PurchaseOrderController extends Controller
     public function show(int $id)
     {
         return $this->ok(new PurchaseOrderResource($this->purchaseOrderService->findOrFail($id)));
+    }
+
+    /** GET /admin/purchase-orders/{id}/payments — the Purchase Order detail view's Payments tab. */
+    public function payments(int $id)
+    {
+        return $this->ok($this->transactionService->paymentsForPurchaseOrder($id));
     }
 
     public function update(UpdatePurchaseOrderRequest $request, int $id)

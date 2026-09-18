@@ -9,6 +9,7 @@ use App\Modules\Order\Requests\UpdateOrderRequest;
 use App\Modules\Order\Resources\OrderListResource;
 use App\Modules\Order\Resources\OrderResource;
 use App\Modules\Order\Services\OrderService;
+use App\Modules\Transaction\Services\TransactionService;
 use App\Support\Http\ApiResponse;
 use Illuminate\Http\Request;
 
@@ -16,7 +17,10 @@ class OrderController extends Controller
 {
     use ApiResponse;
 
-    public function __construct(private readonly OrderService $orderService) {}
+    public function __construct(
+        private readonly OrderService $orderService,
+        private readonly TransactionService $transactionService,
+    ) {}
 
     /**
      * POST /orders — public checkout, no auth required.
@@ -55,6 +59,12 @@ class OrderController extends Controller
     public function show(Order $order)
     {
         return $this->ok(new OrderResource($order->load('items')));
+    }
+
+    /** GET /admin/orders/{order}/receipts — the order detail view's Receipts tab. */
+    public function receipts(Order $order)
+    {
+        return $this->ok($this->transactionService->receiptsForOrder($order->id));
     }
 
     public function update(UpdateOrderRequest $request, Order $order)

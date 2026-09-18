@@ -18,6 +18,7 @@ Route::middleware('auth:sanctum')->group(function (): void {
     // {order} resolves by order_number, not the internal id — see
     // Order::getRouteKeyName(). Applies to all three routes below.
     Route::get('admin/orders/{order}', [OrderController::class, 'show'])->middleware('permission:order_view');
+    Route::get('admin/orders/{order}/receipts', [OrderController::class, 'receipts'])->middleware('permission:order_view');
     Route::patch('admin/orders/{order}', [OrderController::class, 'update'])->middleware('permission:order_update');
 
     // Dedicated cancel action, not the generic PATCH above — cancellation

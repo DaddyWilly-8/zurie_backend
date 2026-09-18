@@ -202,6 +202,12 @@ class GrnService
         return Grn::query()->with(['items', 'grnable'])->findOrFail($id);
     }
 
+    /** Purchase summary report — how many deliveries have been received, total. */
+    public function count(): int
+    {
+        return Grn::query()->count();
+    }
+
     /**
      * "Un-receive" — reverses everything create() did: takes the received
      * stock back out (rejected if it's already been sold/moved on since —

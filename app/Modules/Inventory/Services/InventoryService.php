@@ -403,6 +403,67 @@ class InventoryService
     }
 
     /**
+     * Stock-out for an Inventory Transfer's source outlet — internal
+     * (moving to another of our own outlets) or external (leaving the
+     * business entirely). Same InsufficientStockException guard as every
+     * other decrement. Must be called from inside the caller's
+     * DB::transaction(), same requirement as every other method here.
+     */
+    public function decrementForTransfer(
+        int $productId,
+        int $quantity,
+        int $outletId,
+        ?string $referenceType = null,
+        ?int $referenceId = null,
+    ): void {
+        $this->provisionForProduct($productId, $outletId);
+
+        $inventory = Inventory::query()
+            ->where('product_id', $productId)
+            ->where('sales_outlet_id', $outletId)
+            ->lockForUpdate()
+            ->first();
+
+        if ($inventory->quantity < $quantity) {
+            throw new InsufficientStockException($productId, $inventory->quantity, $quantity);
+        }
+
+        $inventory->quantity -= $quantity;
+        $inventory->stock_status = $inventory->quantity === 0 ? 'OUT_OF_STOCK' : 'IN_STOCK';
+        $inventory->save();
+
+        $this->recordMovement($productId, $outletId, 'transfer_out', -$quantity, referenceType: $referenceType, referenceId: $referenceId);
+    }
+
+    /**
+     * Stock-in for an Inventory Transfer's destination outlet — the
+     * "internal" transfer type only (external transfers have no
+     * destination inside this business). Must be called from inside the
+     * caller's DB::transaction().
+     */
+    public function incrementForTransfer(
+        int $productId,
+        int $quantity,
+        int $outletId,
+        ?string $referenceType = null,
+        ?int $referenceId = null,
+    ): void {
+        $this->provisionForProduct($productId, $outletId);
+
+        $inventory = Inventory::query()
+            ->where('product_id', $productId)
+            ->where('sales_outlet_id', $outletId)
+            ->lockForUpdate()
+            ->first();
+
+        $inventory->quantity += $quantity;
+        $inventory->stock_status = $inventory->quantity === 0 ? 'OUT_OF_STOCK' : 'IN_STOCK';
+        $inventory->save();
+
+        $this->recordMovement($productId, $outletId, 'transfer_in', $quantity, referenceType: $referenceType, referenceId: $referenceId);
+    }
+
+    /**
      * Writes one append-only row to the movements ledger — never updated or
      * deleted afterward. `inventory.quantity` remains the fast-read cached
      * balance; this is the audit trail it's derived from. See
@@ -463,5 +524,26 @@ class InventoryService
         }
 
         return $quantities;
+    }
+
+    /**
+     * Every (product, outlet) row with stock on hand — the Inventory
+     * Value and store-scoped Stock List reports' data source. Pass
+     * `$outletId` to scope to one store.
+     *
+     * @return array<int, array{productId: int, outletId: int, quantity: int, stockStatus: string}>
+     */
+    public function allStockRows(?int $outletId = null): array
+    {
+        return Inventory::query()
+            ->when($outletId !== null, fn ($query) => $query->where('sales_outlet_id', $outletId))
+            ->get(['product_id', 'sales_outlet_id', 'quantity', 'stock_status'])
+            ->map(fn (Inventory $row) => [
+                'productId' => $row->product_id,
+                'outletId' => $row->sales_outlet_id,
+                'quantity' => $row->quantity,
+                'stockStatus' => $row->stock_status,
+            ])
+            ->all();
     }
 }
