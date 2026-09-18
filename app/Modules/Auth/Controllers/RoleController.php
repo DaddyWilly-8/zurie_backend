@@ -36,7 +36,11 @@ class RoleController extends Controller
 
     public function assignPermission(AssignRolePermissionRequest $request, Role $role)
     {
-        $role = $this->roleService->assignPermission($role, (int) $request->validated()['permissionId']);
+        $role = $this->roleService->assignPermission(
+            $role,
+            (int) $request->validated()['permissionId'],
+            $request->user(),
+        );
 
         return $this->ok(new RoleResource($role));
     }
@@ -47,7 +51,11 @@ class RoleController extends Controller
      */
     public function update(UpdateRolePermissionsRequest $request, Role $role)
     {
-        $role = $this->roleService->syncPermissions($role, $request->validated()['permissionIds']);
+        $role = $this->roleService->syncPermissions(
+            $role,
+            $request->validated()['permissionIds'],
+            $request->user(),
+        );
 
         return $this->ok(new RoleResource($role));
     }

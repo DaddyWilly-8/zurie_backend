@@ -104,8 +104,8 @@ class PurchaseService
                 $this->inventoryService->receivePurchase(
                     $line['productId'],
                     $line['quantity'],
-                    Purchase::class,
-                    $purchase->id,
+                    referenceType: Purchase::class,
+                    referenceId: $purchase->id,
                 );
             }
 

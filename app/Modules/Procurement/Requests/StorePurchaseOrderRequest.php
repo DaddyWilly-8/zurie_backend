@@ -23,6 +23,12 @@ class StorePurchaseOrderRequest extends FormRequest
             'currencyId' => ['nullable', 'integer', 'exists:currencies,id'],
             'dateRequired' => ['nullable', 'date'],
             'notes' => ['nullable', 'string'],
+            // When true, the controller immediately posts a GRN receiving
+            // every line in full right after creating the PO — same
+            // one-step "instant receive" behavior the old standalone
+            // Purchases flow had, now built on PurchaseOrder+Grn instead
+            // of a separate model.
+            'instantReceive' => ['nullable', 'boolean'],
             'items' => ['required', 'array', 'min:1'],
             'items.*.productId' => ['required', 'integer', 'exists:products,id'],
             'items.*.measurementUnitId' => ['required', 'integer', 'exists:measurement_units,id'],

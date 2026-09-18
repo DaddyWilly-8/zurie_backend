@@ -10,7 +10,7 @@ use Illuminate\Database\Eloquent\Model;
  * the audit trail `inventory.quantity`'s cached balance is derived from.
  * See Zurie_V2_Architecture_Design (2).md §12 / §35 (0.5).
  */
-#[Fillable(['product_id', 'type', 'quantity', 'reason', 'reference_type', 'reference_id', 'created_by'])]
+#[Fillable(['product_id', 'sales_outlet_id', 'type', 'quantity', 'reason', 'reference_type', 'reference_id', 'created_by'])]
 class InventoryMovement extends Model
 {
     const UPDATED_AT = null;

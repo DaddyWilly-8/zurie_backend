@@ -17,4 +17,5 @@ Route::middleware('auth:sanctum')->group(function (): void {
     Route::get('admin/grns', [GrnController::class, 'index'])->middleware('permission:grn_view');
     Route::post('admin/grns', [GrnController::class, 'store'])->middleware('permission:grn_create');
     Route::get('admin/grns/{id}', [GrnController::class, 'show'])->middleware('permission:grn_view');
+    Route::delete('admin/grns/{id}', [GrnController::class, 'destroy'])->middleware('permission:grn_manage');
 });

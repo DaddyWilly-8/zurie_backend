@@ -129,6 +129,7 @@ class PermissionSeeder extends Seeder
             'purchase_order_update' => 'Update, close/reopen, cancel, or delete purchase orders',
             'grn_view' => 'View goods received notes',
             'grn_create' => 'Receive goods against a purchase order',
+            'grn_manage' => 'Un-receive (delete) a GRN, reversing its stock and ledger effect',
 
             // VAT (Phase E)
             'vat_view' => 'View VAT transactions and the input/output summary',

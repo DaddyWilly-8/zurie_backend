@@ -169,7 +169,15 @@ return [
     |
     */
 
-    'secure' => env('SESSION_SECURE_COOKIE'),
+    // Defaults to true in production rather than relying on
+    // SESSION_SECURE_COOKIE always being set explicitly in every
+    // deployment's .env — a security review found this previously
+    // defaulted to null/false, meaning a forgotten env var in production
+    // would silently let session cookies travel over plain HTTP. Local/
+    // staging environments (APP_ENV != production) keep the old
+    // env-controlled default so `php artisan serve` over plain HTTP still
+    // works without extra setup.
+    'secure' => env('SESSION_SECURE_COOKIE', env('APP_ENV') === 'production'),
 
     /*
     |--------------------------------------------------------------------------

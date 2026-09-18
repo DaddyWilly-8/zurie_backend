@@ -4,6 +4,7 @@ namespace App\Modules\Auth\Requests;
 
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\Rules\Password;
 
 class RegisterRequest extends FormRequest
 {
@@ -20,7 +21,12 @@ class RegisterRequest extends FormRequest
         return [
             'name' => ['required', 'string', 'max:255'],
             'email' => ['required', 'email', 'unique:users,email'],
-            'password' => ['required', 'string', 'min:8', 'confirmed'],
+            // Aligned with StoreUserRequest's policy (admin-created
+            // accounts) during a security review — self-registration
+            // previously only required a plain 8-char minimum with no
+            // complexity requirement, an inconsistent, weaker policy for
+            // the exact same password field on a different creation path.
+            'password' => ['required', Password::min(8)->letters()->mixedCase()->numbers(), 'confirmed'],
             // A phone already claimed by another registered account (i.e.
             // a stakeholders row with a real user_id) can't be reused — bug
             // found in testing: without this check, the request reached

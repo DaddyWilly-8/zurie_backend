@@ -61,5 +61,23 @@ class AppServiceProvider extends ServiceProvider
         RateLimiter::for('checkout', function (Request $request) {
             return Limit::perMinute(15)->by($request->ip());
         });
+
+        // Backs `throttle:register` on POST /auth/register and
+        // `throttle:password-reset` on POST /auth/forgot-password and
+        // /auth/reset-password — a security review found these three had
+        // only the generic 60/min `api` limiter, loose enough to enable
+        // fast account-creation spam or password-reset-email harassment
+        // (mass-triggering reset emails to arbitrary addresses) at up to
+        // 60/minute per IP. Keyed by IP alone (unlike `login`'s email+IP
+        // key) since these endpoints don't take a pre-existing account
+        // identity the same way — an email is part of the payload being
+        // created/targeted, not a stable key to rate-limit by.
+        RateLimiter::for('register', function (Request $request) {
+            return Limit::perMinute(5)->by($request->ip());
+        });
+
+        RateLimiter::for('password-reset', function (Request $request) {
+            return Limit::perMinute(5)->by($request->ip());
+        });
     }
 }

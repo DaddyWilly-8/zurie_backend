@@ -27,7 +27,11 @@ class UserController extends Controller
 
     public function assignRole(AssignUserRoleRequest $request, User $user)
     {
-        $user = $this->userService->assignRole($user, (int) $request->validated()['roleId']);
+        $user = $this->userService->assignRole(
+            $user,
+            (int) $request->validated()['roleId'],
+            $request->user(),
+        );
 
         return $this->ok(new UserResource($user));
     }
@@ -51,7 +55,11 @@ class UserController extends Controller
 
     public function update(UpdateUserRolesRequest $request, User $user)
     {
-        $user = $this->userService->syncRoles($user, $request->validated()['roleIds']);
+        $user = $this->userService->syncRoles(
+            $user,
+            $request->validated()['roleIds'],
+            $request->user(),
+        );
 
         return $this->ok(new UserResource($user));
     }

@@ -13,9 +13,9 @@ use Laravel\Sanctum\Http\Middleware\EnsureFrontendRequestsAreStateful;
 // instead of it — the generic one was never enough on its own to stop
 // sustained password guessing. See zurie-backend-security-audit.md, item #1.
 Route::post('auth/login', [AuthController::class, 'login'])->middleware('throttle:login');
-Route::post('auth/register', [AuthController::class, 'register']);
-Route::post('auth/forgot-password', [AuthController::class, 'forgotPassword']);
-Route::post('auth/reset-password', [AuthController::class, 'resetPassword']);
+Route::post('auth/register', [AuthController::class, 'register'])->middleware('throttle:register');
+Route::post('auth/forgot-password', [AuthController::class, 'forgotPassword'])->middleware('throttle:password-reset');
+Route::post('auth/reset-password', [AuthController::class, 'resetPassword'])->middleware('throttle:password-reset');
 
 // Plain browser-navigated GETs, not XHR — see AuthController::
 // redirectToGoogle()'s docblock for why these can't be POST/JSON like the

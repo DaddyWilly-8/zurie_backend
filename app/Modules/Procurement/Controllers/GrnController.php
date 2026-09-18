@@ -9,7 +9,7 @@ use App\Modules\Procurement\Services\GrnService;
 use App\Support\Http\ApiResponse;
 use Illuminate\Http\Request;
 
-/** Create/list/show only — append-only, like Purchase/Order (see GrnService's docblock). */
+/** Create/list/show, plus delete ("un-receive") — see GrnService's docblock. Never editable. */
 class GrnController extends Controller
 {
     use ApiResponse;
@@ -21,7 +21,8 @@ class GrnController extends Controller
         $page = max(1, (int) $request->query('page', 1));
         $pageSize = max(1, (int) $request->query('pageSize', 20));
 
-        $grns = $this->grnService->paginateAdmin($page, $pageSize);
+        $purchaseOrderId = $request->query('purchaseOrderId');
+        $grns = $this->grnService->paginateAdmin($page, $pageSize, $purchaseOrderId !== null ? (int) $purchaseOrderId : null);
 
         return $this->paginated(
             GrnResource::collection($grns->items()),
@@ -39,5 +40,12 @@ class GrnController extends Controller
     public function show(int $id)
     {
         return $this->ok(new GrnResource($this->grnService->findOrFail($id)));
+    }
+
+    public function destroy(int $id)
+    {
+        $this->grnService->delete($this->grnService->findOrFail($id));
+
+        return $this->ok(['message' => 'GRN un-received.']);
     }
 }

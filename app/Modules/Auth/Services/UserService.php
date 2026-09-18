@@ -6,6 +6,7 @@ use App\Modules\Auth\Models\User;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Validation\ValidationException;
 
 class UserService
 {
@@ -21,8 +22,31 @@ class UserService
         ]);
     }
 
-    public function assignRole(User $user, int $roleId): User
+    /**
+     * Privilege-escalation guard, added during a security review: without
+     * this, any account holding `user_manage` could grant itself an
+     * arbitrary role (including one with every permission) via this same
+     * endpoint. Self-modification of roles is blocked outright — an
+     * account managing roles must always be a *different* admin from the
+     * one being changed, mirroring the standard "you can't promote
+     * yourself" rule most RBAC systems enforce. Role*permission*
+     * escalation (a narrower admin granting a role more power than they
+     * themselves hold) is closed separately in RoleService, since that's
+     * where permissions actually get attached to a role.
+     */
+    private function assertNotActingOnSelf(User $user, User $actingUser): void
     {
+        if ($user->id === $actingUser->id) {
+            throw ValidationException::withMessages([
+                'user' => 'You cannot change your own roles.',
+            ]);
+        }
+    }
+
+    public function assignRole(User $user, int $roleId, User $actingUser): User
+    {
+        $this->assertNotActingOnSelf($user, $actingUser);
+
         // sync()/syncWithoutDetaching() issue separate attach/detach queries
         // under the hood with no implicit transaction of their own.
         DB::transaction(function () use ($user, $roleId): void {
@@ -45,8 +69,10 @@ class UserService
     /**
      * @param  array<int, int>  $roleIds
      */
-    public function syncRoles(User $user, array $roleIds): User
+    public function syncRoles(User $user, array $roleIds, User $actingUser): User
     {
+        $this->assertNotActingOnSelf($user, $actingUser);
+
         DB::transaction(function () use ($user, $roleIds): void {
             $user->roles()->sync($roleIds);
         });

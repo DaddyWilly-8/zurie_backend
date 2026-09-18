@@ -253,7 +253,13 @@ class OrderService
                 // past zero. Throws InsufficientStockException, caught
                 // globally in bootstrap/app.php, if stock is short — which
                 // rolls back this entire transaction.
-                $this->inventoryService->decrementForOrder($product->id, $line['quantity'], Order::class, $order->id);
+                $this->inventoryService->decrementForOrder(
+                    $product->id,
+                    $line['quantity'],
+                    outletId: $outlet->id,
+                    referenceType: Order::class,
+                    referenceId: $order->id,
+                );
 
                 $resolved = $this->priceListService->resolvePrice(
                     productId: $product->id,
@@ -649,7 +655,13 @@ class OrderService
 
             $totalCost = 0.0;
             foreach ($order->items as $item) {
-                $this->inventoryService->restockForOrder($item->product_id, $item->quantity, Order::class, $order->id);
+                $this->inventoryService->restockForOrder(
+                    $item->product_id,
+                    $item->quantity,
+                    outletId: $order->outlet_id,
+                    referenceType: Order::class,
+                    referenceId: $order->id,
+                );
                 $totalCost += (float) $item->unit_buying_price * $item->quantity;
             }
 

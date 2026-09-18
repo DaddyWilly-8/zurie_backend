@@ -2,12 +2,14 @@
 
 namespace App\Modules\Procurement\Services;
 
+use App\Modules\Finance\Models\JournalEntry;
 use App\Modules\Finance\Services\FinanceService;
 use App\Modules\Inventory\Services\InventoryService;
 use App\Modules\Procurement\Models\Grn;
 use App\Modules\Procurement\Models\PurchaseOrder;
 use App\Modules\Procurement\Models\PurchaseOrderItem;
 use App\Modules\Supplier\Models\Supplier;
+use App\Modules\Vat\Models\VatTransaction;
 use App\Modules\Vat\Services\VatService;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Facades\DB;
@@ -30,10 +32,10 @@ class GrnService
     /**
      * The one place a PurchaseOrder actually moves stock and posts to the
      * ledger — matching the reference doc's separation of "order intent"
-     * (PurchaseOrder) from "goods actually received" (Grn). Append-only,
-     * like Purchase/Order — a received-goods event isn't arbitrarily
-     * edited/deleted once it's affected stock and the ledger (see
-     * GrnController — create/list/show only).
+     * (PurchaseOrder) from "goods actually received" (Grn). Deletable via
+     * delete() below ("un-receive"), but never editable — a correction is
+     * always delete-then-recreate, never a partial edit of what was
+     * received.
      *
      * @param  array<string, mixed>  $data  purchaseOrderId, dateReceived?, costFactor?, notes?, lines: array<{purchaseOrderItemId, quantityReceived}>
      */
@@ -103,7 +105,12 @@ class GrnService
                 $grn->items()->attach($item->id, ['quantity_received' => $quantityReceived]);
 
                 $stockQuantity = (int) round($quantityReceived * $item->conversion_factor);
-                $this->inventoryService->receivePurchase($item->product_id, $stockQuantity, Grn::class, $grn->id);
+                $this->inventoryService->receivePurchase(
+                    $item->product_id,
+                    $stockQuantity,
+                    referenceType: Grn::class,
+                    referenceId: $grn->id,
+                );
 
                 $lineCost = $quantityReceived * $item->rate * $grn->cost_factor;
                 $totalCost += $lineCost;
@@ -172,13 +179,77 @@ class GrnService
         );
     }
 
-    public function paginateAdmin(int $page, int $pageSize): LengthAwarePaginator
+    /**
+     * `purchaseOrderId` filters to one PO's own delivery history — the
+     * GRNs tab on a PurchaseOrder row. `grnable_type` is always
+     * PurchaseOrder::class today (the only GRN source that exists), but
+     * still filtered explicitly rather than assumed, matching the
+     * polymorphic column's own intent.
+     */
+    public function paginateAdmin(int $page, int $pageSize, ?int $purchaseOrderId = null): LengthAwarePaginator
     {
-        return Grn::query()->with('items')->orderByDesc('id')->paginate($pageSize, ['*'], 'page', $page);
+        return Grn::query()
+            ->with('items')
+            ->when($purchaseOrderId !== null, fn ($query) => $query
+                ->where('grnable_type', PurchaseOrder::class)
+                ->where('grnable_id', $purchaseOrderId))
+            ->orderByDesc('id')
+            ->paginate($pageSize, ['*'], 'page', $page);
     }
 
     public function findOrFail(int $id): Grn
     {
         return Grn::query()->with(['items', 'grnable'])->findOrFail($id);
+    }
+
+    /**
+     * "Un-receive" — reverses everything create() did: takes the received
+     * stock back out (rejected if it's already been sold/moved on since —
+     * see InventoryService::reversePurchaseReceipt()'s docblock), reverses
+     * the ledger entry via FinanceService::deleteEntry() (the same
+     * balance-safe hard-delete Phase G's Payment/Receipt/etc. use, not a
+     * raw row delete that would leave `ledgers.current_balance` wrong),
+     * deletes the VAT record this GRN produced (it no longer describes a
+     * real transaction once reversed — leaving it would permanently
+     * overstate the VAT summary), then deletes the GRN itself (cascading
+     * its `grn_purchase_order_item` pivot rows) and recomputes the
+     * purchase order's status, which may fall back from fully_received to
+     * partially_received or pending.
+     */
+    public function delete(Grn $grn): void
+    {
+        DB::transaction(function () use ($grn) {
+            foreach ($grn->items as $item) {
+                $stockQuantity = (int) round($item->pivot->quantity_received * $item->conversion_factor);
+                $this->inventoryService->reversePurchaseReceipt(
+                    $item->product_id,
+                    $stockQuantity,
+                    referenceType: Grn::class,
+                    referenceId: $grn->id,
+                );
+            }
+
+            $journalEntryIds = JournalEntry::where('reference_type', Grn::class)
+                ->where('reference_id', $grn->id)
+                ->pluck('id');
+            foreach ($journalEntryIds as $journalEntryId) {
+                $this->financeService->deleteEntry(JournalEntry::findOrFail($journalEntryId));
+            }
+
+            VatTransaction::where('vatable_type', Grn::class)->where('vatable_id', $grn->id)->delete();
+
+            $purchaseOrder = $grn->grnable;
+            $grnNumber = $grn->grn_number;
+
+            $grn->delete();
+
+            if ($purchaseOrder instanceof PurchaseOrder) {
+                $this->purchaseOrderService->recomputeStatus($purchaseOrder);
+            }
+
+            activity('grn')
+                ->event('deleted')
+                ->log("GRN {$grnNumber} un-received");
+        });
     }
 }
