@@ -46,7 +46,8 @@ class GrnService
         }
 
         return DB::transaction(function () use ($data) {
-            $purchaseOrder = PurchaseOrder::query()->with('items')->findOrFail($data['purchaseOrderId']);
+            /** @var PurchaseOrder $purchaseOrder */
+            $purchaseOrder = PurchaseOrder::query()->with('items')->findOrFail((int) $data['purchaseOrderId']);
 
             if (in_array($purchaseOrder->status, ['closed', 'canceled'], true)) {
                 throw ValidationException::withMessages(['purchaseOrder' => "Cannot receive goods against a purchase order in status '{$purchaseOrder->status}'."]);
