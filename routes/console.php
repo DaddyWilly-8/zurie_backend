@@ -23,3 +23,22 @@ Schedule::command('backup:database')
     ->dailyAt('00:00')
     ->timezone(config('app.timezone'))
     ->withoutOverlapping();
+
+// Books safety net — recomputes every ledger balance from its journal lines
+// and exits non-zero on drift (see Finance\Console\ReconcileLedgersCommand).
+// Read-only: it reports, it never silently "fixes" money; correcting needs
+// a human running `finance:reconcile --fix`. Runs after the backup so a
+// known-good dump exists first.
+Schedule::command('finance:reconcile')
+    ->dailyAt('00:30')
+    ->timezone(config('app.timezone'))
+    ->withoutOverlapping()
+    ->onFailure(fn () => \Illuminate\Support\Facades\Log::critical('finance:reconcile found ledger drift — run it manually to inspect.'));
+
+// Idempotency keys only need to outlive realistic client retries.
+Schedule::call(fn () => \Illuminate\Support\Facades\DB::table('idempotency_keys')
+    ->where('created_at', '<', now()->subDays(2))
+    ->delete())
+    ->name('prune-idempotency-keys')
+    ->dailyAt('01:00')
+    ->timezone(config('app.timezone'));

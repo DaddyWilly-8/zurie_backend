@@ -80,6 +80,8 @@ class PurchaseService
             $totalAmount = 0.0;
             $totalVat = 0.0;
 
+            $this->inventoryService->lockStockRows(array_column($data['items'], 'productId'));
+
             foreach ($data['items'] as $line) {
                 $lineTotal = $line['quantity'] * $line['costPrice'];
                 $totalAmount += $lineTotal;

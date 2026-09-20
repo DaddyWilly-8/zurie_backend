@@ -10,7 +10,7 @@ use Illuminate\Support\Facades\Route;
 // `throttle:checkout` (15/min, keyed by IP — see AppServiceProvider) is on
 // top of the generic 60/min `api` limiter, not instead of it — see
 // zurie-backend-security-audit.md, item #5.
-Route::post('orders', [OrderController::class, 'store'])->middleware('throttle:checkout');
+Route::post('orders', [OrderController::class, 'store'])->middleware('throttle:checkout')->middleware('idempotent');
 
 Route::middleware('auth:sanctum')->group(function (): void {
     Route::get('admin/orders', [OrderController::class, 'index'])->middleware('permission:order_view');

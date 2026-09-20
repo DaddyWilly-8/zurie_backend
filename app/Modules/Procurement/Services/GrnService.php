@@ -83,6 +83,11 @@ class GrnService
             $totalCost = 0.0;
             $totalVat = 0.0;
 
+            $receivedItemIds = collect($data['lines'])->pluck('purchaseOrderItemId')->map(fn ($id) => (int) $id)->all();
+            $this->inventoryService->lockStockRows(
+                $purchaseOrder->items->whereIn('id', $receivedItemIds)->pluck('product_id')->all(),
+            );
+
             foreach ($data['lines'] as $line) {
                 /** @var PurchaseOrderItem $item */
                 $item = $purchaseOrder->items->firstWhere('id', (int) $line['purchaseOrderItemId']);
@@ -226,6 +231,8 @@ class GrnService
     public function delete(Grn $grn): void
     {
         DB::transaction(function () use ($grn) {
+            $this->inventoryService->lockStockRows($grn->items->pluck('product_id')->all());
+
             foreach ($grn->items as $item) {
                 $stockQuantity = (int) round($item->pivot->quantity_received * $item->conversion_factor);
                 $this->inventoryService->reversePurchaseReceipt(

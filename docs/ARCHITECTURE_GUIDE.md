@@ -284,6 +284,18 @@ Logs: `storage/logs/laravel.log`. List routes: `php artisan route:list --path=ad
 - One High PostCSS advisory remains on the frontend (needs a Next 15→16 major upgrade; deliberately deferred).
 - Balance sheet relies on the "no closing entries" assumption; if you later add period closing, change `balanceSheet()`.
 
+## 14b. Open work — partly done, come back to these
+
+| Item | Done so far | Still to do |
+|---|---|---|
+| Money precision | Lines rounded to cents before the balance check; reconcile compares in cents | Move to whole-cent integers (or a decimal library) end to end; remove the 1-cent tolerance in `postEntry` |
+| Report growth | Indexes on orders / journal date / stakeholders / inventory movements | Date-range filters on reports; cache heavy aggregates; paginate the ~24 unbounded `get()` calls |
+| Operations | Nightly backup, nightly `finance:reconcile`, idempotency-key pruning, logging notes in `.env.example` | Admin 2FA, error monitoring, log rotation on the server, restore test of a backup |
+| Infrastructure | Nothing (server work) | Redis for sessions/cache/queue, object storage for uploads, real mail provider, queue worker, load test on staging |
+| Idempotency | Backend supports all money POSTs; storefront checkout and POS sale send the key | Send the key from payments, receipts, purchase orders, GRNs, transfers, expenses screens |
+| Test coverage | Ledger posting, checkout, GRN receive/un-receive, reconcile, idempotency | Payments/receipts, transfers, delivery, auth and RBAC boundaries |
+| Customer/staff split | Designed (`customer_accounts` table + `customer` guard), not started | Build it: tests first, then schema, guard, endpoints, frontend, live boundary tests |
+
 ## 15. Suggested reading order (≈ half a day)
 
 1. `CLAUDE.md`, this file.

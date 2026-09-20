@@ -2,6 +2,7 @@
 
 namespace App\Modules\Finance\Providers;
 
+use App\Modules\Finance\Console\ReconcileLedgersCommand;
 use Illuminate\Support\ServiceProvider;
 
 /**
@@ -18,6 +19,8 @@ class FinanceModuleServiceProvider extends ServiceProvider
 
     public function boot(): void
     {
-        //
+        if ($this->app->runningInConsole()) {
+            $this->commands([ReconcileLedgersCommand::class]);
+        }
     }
 }

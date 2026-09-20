@@ -46,6 +46,41 @@ class InventoryService
         );
     }
 
+    /**
+     * Deadlock prevention for multi-line stock writes — take every needed
+     * row lock up front, always ordered by (outlet, product), instead of
+     * locking each row as the loop happens to reach it. Two carts holding
+     * the same two products in opposite order would otherwise each lock
+     * one row and wait forever on the other. Provisions any missing rows
+     * first (so there is a row to lock). Must be called inside the
+     * caller's DB::transaction() — lockForUpdate() is a no-op outside one.
+     *
+     * @param  array<int, int|string>  $productIds
+     * @param  array<int, int|null>|int|null  $outletIds  one outlet, several (transfers), or null for the default outlet
+     */
+    public function lockStockRows(array $productIds, array|int|null $outletIds = null): void
+    {
+        $outlets = collect(is_array($outletIds) ? $outletIds : [$outletIds])
+            ->map(fn ($id) => $this->resolveOutletId($id))
+            ->unique()->sort()->values()->all();
+        $products = collect($productIds)->map(fn ($id) => (int) $id)->unique()->sort()->values()->all();
+
+        foreach ($outlets as $outlet) {
+            foreach ($products as $product) {
+                $this->provisionForProduct($product, $outlet);
+            }
+        }
+
+        if ($outlets !== [] && $products !== []) {
+            Inventory::query()
+                ->whereIn('sales_outlet_id', $outlets)
+                ->whereIn('product_id', $products)
+                ->orderBy('sales_outlet_id')->orderBy('product_id')
+                ->lockForUpdate()
+                ->get(['id']);
+        }
+    }
+
     public function getForProduct(int $productId, ?int $outletId = null): Inventory
     {
         return $this->provisionForProduct($productId, $outletId);

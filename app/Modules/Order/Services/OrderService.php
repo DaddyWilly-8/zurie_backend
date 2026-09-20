@@ -242,6 +242,10 @@ class OrderService
             $totalCost = 0.0;
             $totalVat = 0.0;
 
+            // Lock every needed stock row up front in a fixed order, so two
+            // carts with the same products in opposite order can't deadlock.
+            $this->inventoryService->lockStockRows(array_column($items, 'productId'), $outlet->id);
+
             foreach ($items as $line) {
                 $product = $this->productService->findActiveForOrder($line['productId']);
 
@@ -675,6 +679,8 @@ class OrderService
             }
 
             $order->loadMissing('items');
+
+            $this->inventoryService->lockStockRows($order->items->pluck('product_id')->all(), $order->outlet_id);
 
             $totalCost = 0.0;
             foreach ($order->items as $item) {

@@ -73,6 +73,15 @@ class InventoryTransferService
 
             $totalWriteOffValue = 0.0;
 
+            if ($type !== 'cost_center_change') {
+                // Source and (for internal) destination rows locked together in
+                // (outlet, product) order so opposite-direction transfers can't deadlock.
+                $this->inventoryService->lockStockRows(
+                    array_column($data['items'], 'productId'),
+                    array_filter([$sourceOutlet->id, $type === 'internal' ? $destinationOutletId : null]),
+                );
+            }
+
             foreach ($data['items'] as $line) {
                 $quantity = (int) $line['quantity'];
 

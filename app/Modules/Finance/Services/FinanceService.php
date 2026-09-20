@@ -103,6 +103,16 @@ class FinanceService
             throw new \InvalidArgumentException('postEntry() called with zero lines — every journal entry needs at least one debit and one credit line.');
         }
 
+        // Round every line to the 2 decimals the column actually stores
+        // BEFORE checking balance — otherwise the check runs on raw float
+        // values (e.g. 33.3350000001) while the database silently stores
+        // something else, and the two can disagree by a cent.
+        $lines = array_map(function (array $line) {
+            $line['amount'] = round((float) $line['amount'], 2);
+
+            return $line;
+        }, $lines);
+
         $totalDebits = 0.0;
         $totalCredits = 0.0;
 
@@ -114,13 +124,16 @@ class FinanceService
             }
         }
 
-        // Tolerance rather than exact float equality — these totals are
-        // sums of plain floats from caller-assembled lines, not bcmath.
-        if (abs($totalDebits - $totalCredits) > 0.01) {
+        // Compared in whole cents. One cent of slack remains because VAT
+        // percentages can leave per-line fractions that round apart; a
+        // full move to integer minor units is the long-term fix.
+        if (abs((int) round($totalDebits * 100) - (int) round($totalCredits * 100)) > 1) {
             throw new UnbalancedJournalEntryException($totalDebits, $totalCredits);
         }
 
         return DB::transaction(function () use ($lines, $narration, $referenceType, $referenceId, $createdBy, $date, $currencyId, $exchangeRate) {
+            $this->lockLedgersInOrder(array_column($lines, 'ledger_id'));
+
             // Defaults to the base currency at rate 1.0 when the caller
             // doesn't specify one — every existing caller (Order,
             // Purchase, Expense) still posts in implicit base-currency
@@ -218,12 +231,85 @@ class FinanceService
     public function deleteEntry(JournalEntry $entry): void
     {
         DB::transaction(function () use ($entry) {
+            $this->lockLedgersInOrder($entry->lines->pluck('ledger_id')->all());
+
             foreach ($entry->lines as $line) {
                 $this->applyToLedgerBalance($line->ledger_id, $line->type === 'debit' ? 'credit' : 'debit', (float) $line->amount);
             }
 
             $entry->delete();
         });
+    }
+
+    /**
+     * Recomputes each ledger's balance from opening_balance plus every
+     * journal line (same own-direction rule as applyToLedgerBalance()) and
+     * returns the ledgers whose stored current_balance disagrees. With
+     * $fix = true the stored value is overwritten. Compared in whole
+     * hundredths so float noise never reports false drift.
+     *
+     * @return array<int, array{ledgerId: int, name: string, code: string, stored: float, expected: float, difference: float}>
+     */
+    public function reconcileLedgers(bool $fix = false): array
+    {
+        $sums = \App\Modules\Finance\Models\JournalEntryLine::query()
+            ->selectRaw("ledger_id, type, SUM(amount) as total")
+            ->groupBy('ledger_id', 'type')
+            ->get()
+            ->groupBy('ledger_id');
+
+        $drift = [];
+
+        foreach (Ledger::query()->with('group')->get() as $ledger) {
+            $normalBalanceIsDebit = in_array($ledger->group->nature, ['asset', 'expense'], true);
+            if ($ledger->is_contra) {
+                $normalBalanceIsDebit = ! $normalBalanceIsDebit;
+            }
+
+            $expected = (float) $ledger->opening_balance;
+            foreach ($sums->get($ledger->id, collect()) as $row) {
+                $expected += ((($row->type === 'debit') === $normalBalanceIsDebit) ? 1 : -1) * (float) $row->total;
+            }
+
+            $stored = (float) $ledger->current_balance;
+            if ((int) round($stored * 100) !== (int) round($expected * 100)) {
+                $drift[] = [
+                    'ledgerId' => $ledger->id,
+                    'name' => $ledger->name,
+                    'code' => $ledger->code,
+                    'stored' => $stored,
+                    'expected' => round($expected, 2),
+                    'difference' => round($stored - $expected, 2),
+                ];
+
+                if ($fix) {
+                    $ledger->update(['current_balance' => round($expected, 2)]);
+                }
+            }
+        }
+
+        return $drift;
+    }
+
+    /**
+     * Deadlock prevention: two concurrent transactions that lock the same
+     * ledgers in different orders (a sale touches Cash then Sales; a GRN
+     * touches Inventory then a supplier) can each hold what the other
+     * wants, and MySQL kills one of them with a 500. Taking every lock up
+     * front, always in ascending id order, means all transactions queue
+     * in the same order and can never deadlock on ledger rows. Must run
+     * inside the caller's DB::transaction() — lockForUpdate() is a no-op
+     * outside one.
+     *
+     * @param  array<int, int|string>  $ledgerIds
+     */
+    private function lockLedgersInOrder(array $ledgerIds): void
+    {
+        $ids = collect($ledgerIds)->map(fn ($id) => (int) $id)->unique()->sort()->values()->all();
+
+        if ($ids !== []) {
+            Ledger::query()->whereIn('id', $ids)->orderBy('id')->lockForUpdate()->get(['id']);
+        }
     }
 
     /**
