@@ -2,25 +2,29 @@
 
 namespace App\Modules\Auth\Services;
 
-use App\Modules\Auth\Models\OAuthIdentity;
-use App\Modules\Auth\Models\Role;
 use App\Modules\Auth\Models\User;
-use App\Modules\Customer\Services\CustomerService;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Hash;
-use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
-use Laravel\Socialite\Contracts\User as SocialiteUser;
 
 class AuthService
 {
-    public function __construct(private readonly CustomerService $customerService) {}
+    public function __construct(private readonly TwoFactorService $twoFactorService) {}
 
     /**
-     * Sanctum SPA cookie auth: establishes the session cookie, no token returned.
+     * Sanctum SPA cookie auth: establishes the session cookie, no token
+     * returned. When the account has 2FA confirmed, password success
+     * alone is deliberately NOT enough — Auth::attempt() below briefly
+     * authenticates the guard to obtain the User model (its own
+     * `password` check is exactly what we want reused), then this method
+     * immediately logs the guard back out and stores only a short-lived
+     * "which user is mid-challenge" marker in the (regenerated) session,
+     * never a real login, until challengeTwoFactor() proves the second
+     * factor too. See its docblock for the full round trip.
+     *
+     * @return array{status: 'authenticated', user: User}|array{status: 'two_factor_required'}
      */
-    public function attempt(string $email, string $password): User
+    public function attempt(string $email, string $password): array
     {
         if (! Auth::guard('web')->attempt(['email' => $email, 'password' => $password])) {
             throw ValidationException::withMessages([
@@ -28,124 +32,78 @@ class AuthService
             ]);
         }
 
-        request()->session()->regenerate();
-
         /** @var User $user */
         $user = Auth::guard('web')->user();
 
-        return $user->load('roles.permissions');
+        if ($user->hasTwoFactorEnabled()) {
+            Auth::guard('web')->logout();
+
+            // Regenerated even for this partial state — a session id an
+            // attacker fixed before the password step must never carry
+            // forward into the authenticated session the challenge step
+            // produces (classic session-fixation defense, same reasoning
+            // full login already applies below).
+            request()->session()->regenerate();
+            request()->session()->put('two_factor_user_id', $user->id);
+            request()->session()->put('two_factor_expires_at', now()->addMinutes(5)->timestamp);
+
+            return ['status' => 'two_factor_required'];
+        }
+
+        request()->session()->regenerate();
+
+        return ['status' => 'authenticated', 'user' => $user->load('roles.permissions')];
     }
 
     /**
-     * Public storefront signup — always creates a `customer`-role User
-     * (never grants any admin permission), links/merges a Customer record
-     * (see CustomerService::linkAccount() for the guest-history-merge
-     * behavior), and logs the new account in immediately, same session
-     * mechanism as attempt(). Never optional/skippable at checkout — see
-     * Zurie_V2_Architecture_Design (2)'s Customer Architecture: signup is
-     * always available, never mandatory to complete a purchase.
+     * Second step of a 2FA login — completes the session AuthService::
+     * attempt() deliberately left un-authenticated. Accepts either a live
+     * TOTP code or a single-use recovery code (TwoFactorService tries
+     * both). The pending marker is single-use and time-boxed to 5 minutes
+     * — expired or already-consumed markers fail closed, forcing the
+     * caller back through attempt() with their password again rather than
+     * leaving a long-lived "half logged in" window an attacker who only
+     * has the password (not the second factor) could sit on.
      *
-     * Wrapped in a transaction — without it, a phone-number collision in
-     * linkAccount() (the customers.phone unique constraint) would leave a
-     * committed User row with no linked Customer behind, permanently
-     * burning that email on a registration report as failed. Bug found
-     * and fixed in testing: RegisterRequest also validates the phone isn't
-     * already claimed, so this is defense in depth against a race, not
-     * the only guard.
-     *
-     * @param  array<string, mixed>  $data  name, email, password, phone, whatsappNumber?
+     * @throws ValidationException  if the challenge expired/wasn't started, or the code is wrong
      */
-    public function register(array $data): User
+    public function challengeTwoFactor(string $code): User
     {
-        $user = DB::transaction(function () use ($data) {
-            $user = User::create([
-                'name' => $data['name'],
-                'email' => $data['email'],
-                'password' => Hash::make($data['password']),
+        $session = request()->session();
+        $userId = $session->get('two_factor_user_id');
+        $expiresAt = $session->get('two_factor_expires_at');
+
+        if ($userId === null || $expiresAt === null || now()->timestamp > $expiresAt) {
+            $session->forget(['two_factor_user_id', 'two_factor_expires_at']);
+
+            throw ValidationException::withMessages([
+                'code' => ['This two-factor challenge has expired — log in again.'],
             ]);
+        }
 
-            $customerRole = Role::where('name', 'customer')->firstOrFail();
-            $user->roles()->attach($customerRole->id);
+        /** @var User $user */
+        $user = User::findOrFail($userId);
 
-            $this->customerService->linkAccount($user->id, [
-                'name' => $data['name'],
-                'phone' => $data['phone'],
-                'whatsapp_number' => $data['whatsappNumber'] ?? null,
-                'email' => $data['email'],
-            ]);
+        $verified = $this->twoFactorService->verifyCode($user, $code)
+            || $this->twoFactorService->verifyRecoveryCode($user, $code);
 
-            return $user;
-        });
+        if (! $verified) {
+            throw ValidationException::withMessages(['code' => ['That code is invalid.']]);
+        }
+
+        $session->forget(['two_factor_user_id', 'two_factor_expires_at']);
 
         Auth::guard('web')->login($user);
-        request()->session()->regenerate();
+        $session->regenerate();
 
         return $user->load('roles.permissions');
     }
 
-    /**
-     * Google (or any future Socialite provider) sign-in/sign-up in one
-     * step. Resolution order: (1) an oauth_identities row already links
-     * this exact provider+id to a User — log that User in; (2) no linked
-     * identity yet, but a User already exists with this email (they
-     * previously registered with a password) — attach the identity to
-     * that existing account rather than erroring or creating a duplicate,
-     * so "sign up with email" and "sign in with Google" using the same
-     * address converge on one account; (3) neither — create a new User.
-     *
-     * Deliberately does NOT create a Customer record here (unlike
-     * register()) — Google never supplies a phone number, and
-     * CustomerService::linkAccount() requires one (customers.phone is a
-     * real, meaningful field, not a placeholder to fake). The self-service
-     * Account page already handles `profile: null` as a normal state
-     * (AccountController::profile()'s docblock); a customer who signed up
-     * via Google completes their profile there before their first order,
-     * the same "not mandatory to complete a purchase, but customer-facing"
-     * shape as ordinary signup.
-     *
-     * A random, never-shown password is set on a Google-created User —
-     * `password` isn't nullable on `users` (a real column with real
-     * meaning for password-based accounts), and this account was never
-     * meant to be reachable by the password login form anyway.
-     */
-    public function loginOrRegisterViaSocialite(string $provider, SocialiteUser $socialiteUser): User
-    {
-        $user = DB::transaction(function () use ($provider, $socialiteUser) {
-            $identity = OAuthIdentity::where('provider', $provider)
-                ->where('provider_id', $socialiteUser->getId())
-                ->first();
-
-            if ($identity !== null) {
-                return $identity->user;
-            }
-
-            $user = User::where('email', $socialiteUser->getEmail())->first();
-
-            if ($user === null) {
-                $user = User::create([
-                    'name' => $socialiteUser->getName() ?? $socialiteUser->getEmail(),
-                    'email' => $socialiteUser->getEmail(),
-                    'password' => Hash::make(Str::random(40)),
-                ]);
-
-                $customerRole = Role::where('name', 'customer')->firstOrFail();
-                $user->roles()->attach($customerRole->id);
-            }
-
-            OAuthIdentity::create([
-                'user_id' => $user->id,
-                'provider' => $provider,
-                'provider_id' => $socialiteUser->getId(),
-            ]);
-
-            return $user;
-        });
-
-        Auth::guard('web')->login($user);
-        request()->session()->regenerate();
-
-        return $user->load('roles.permissions');
-    }
+    // register() and loginOrRegisterViaSocialite() moved to
+    // CustomerAuthService/CustomerAccountService as part of the
+    // customer/staff split — this service is staff-only ('web' guard)
+    // from that point on. Staff accounts are created by an existing admin
+    // via UserService::create(), never self-registered.
 
     public function logout(): void
     {

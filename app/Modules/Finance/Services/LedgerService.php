@@ -23,7 +23,7 @@ class LedgerService
     {
         $openingBalance = (float) ($data['openingBalance'] ?? 0);
 
-        return Ledger::create([
+        $ledger = Ledger::create([
             'ledger_group_id' => $data['ledgerGroupId'],
             'name' => $data['name'],
             'code' => $data['code'],
@@ -32,6 +32,10 @@ class LedgerService
             'is_system' => false,
             'is_contra' => $data['isContra'] ?? false,
         ]);
+
+        activity('finance')->performedOn($ledger)->event('created')->log("Ledger '{$ledger->name}' ({$ledger->code}) created with opening balance {$openingBalance}");
+
+        return $ledger;
     }
 
     public function findOrFail(int $id): Ledger
@@ -66,6 +70,8 @@ class LedgerService
             'code' => $data['code'] ?? $ledger->code,
         ]);
 
+        activity('finance')->performedOn($ledger)->event('updated')->log("Ledger '{$ledger->name}' ({$ledger->code}) updated");
+
         return $ledger;
     }
 
@@ -98,6 +104,11 @@ class LedgerService
             ]);
         }
 
+        $name = $ledger->name;
+        $code = $ledger->code;
+
         $ledger->delete();
+
+        activity('finance')->event('deleted')->log("Ledger '{$name}' ({$code}) deleted");
     }
 }

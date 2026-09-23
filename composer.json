@@ -11,6 +11,9 @@
         "laravel/sanctum": "^4.0",
         "laravel/socialite": "^5.31",
         "laravel/tinker": "^3.0",
+        "pragmarx/google2fa": "^8.0",
+        "predis/predis": "^3.6",
+        "sentry/sentry-laravel": "^4.27",
         "spatie/laravel-activitylog": "^5.1"
     },
     "require-dev": {

@@ -30,12 +30,13 @@ class ReviewController extends Controller
     }
 
     /**
-     * POST /account/reviews — self-service, requires a linked Customer
-     * record (same rule as WishlistController).
+     * POST /account/reviews — self-service, customer-only, requires a
+     * linked Customer record (same rule as WishlistController).
      */
     public function store(StoreReviewRequest $request)
     {
-        $customer = $this->customerService->findByUserId($request->user()->id);
+        $stakeholderId = $request->user('customer')->stakeholder_id;
+        $customer = $stakeholderId !== null ? $this->customerService->findById($stakeholderId) : null;
         if ($customer === null) {
             return $this->fail('No customer profile is linked to this account.', 422);
         }

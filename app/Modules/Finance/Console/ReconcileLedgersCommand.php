@@ -32,9 +32,23 @@ class ReconcileLedgersCommand extends Command
             array_map(fn (array $row) => [$row['name'], $row['code'], $row['stored'], $row['expected'], $row['difference']], $drift),
         );
 
-        $this->option('fix')
-            ? $this->warn('Drift corrected (--fix).')
-            : $this->error(count($drift).' ledger(s) drifted. Re-run with --fix to correct.');
+        if ($this->option('fix')) {
+            $this->warn('Drift corrected (--fix).');
+
+            // Silently rewriting a stored money value is exactly the kind
+            // of event this codebase never lets pass unlogged elsewhere
+            // (see FinanceService::deleteEntry()) — a drifted balance
+            // being auto-corrected is no different, so it goes through
+            // the same activity log as every other financial change,
+            // with the full before/after list kept in `properties` for
+            // whoever investigates why the numbers moved.
+            activity('finance')
+                ->event('reconciled')
+                ->withProperties(['drift' => $drift])
+                ->log(count($drift)." ledger(s) had drifted balances corrected by finance:reconcile --fix");
+        } else {
+            $this->error(count($drift).' ledger(s) drifted. Re-run with --fix to correct.');
+        }
 
         return $this->option('fix') ? self::SUCCESS : self::FAILURE;
     }

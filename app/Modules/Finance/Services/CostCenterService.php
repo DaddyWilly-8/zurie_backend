@@ -27,11 +27,15 @@ class CostCenterService
         // (parent_id) explicitly rather than array_merge()-ing $data in
         // raw — see OutletService::create()'s comment for why a raw merge
         // is the wrong pattern here.
-        return CostCenter::create([
+        $costCenter = CostCenter::create([
             'is_active' => true,
             'name' => $data['name'],
             'parent_id' => $data['parentId'] ?? null,
         ]);
+
+        activity('finance')->performedOn($costCenter)->event('created')->log("Cost center '{$costCenter->name}' created");
+
+        return $costCenter;
     }
 
     public function all(): Collection
@@ -64,6 +68,8 @@ class CostCenterService
             'parent_id' => $parentId,
         ]);
 
+        activity('finance')->performedOn($costCenter)->event('updated')->log("Cost center '{$costCenter->name}' updated");
+
         return $costCenter;
     }
 
@@ -76,6 +82,11 @@ class CostCenterService
     public function setActive(CostCenter $costCenter, bool $isActive): CostCenter
     {
         $costCenter->update(['is_active' => $isActive]);
+
+        activity('finance')
+            ->performedOn($costCenter)
+            ->event('updated')
+            ->log("Cost center '{$costCenter->name}' ".($isActive ? 'reactivated' : 'deactivated'));
 
         return $costCenter;
     }

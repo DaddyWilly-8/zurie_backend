@@ -10,9 +10,13 @@ use App\Support\Http\ApiResponse;
 use Illuminate\Http\Request;
 
 /**
- * Self-service — always scoped to $request->user()->id, same rule as
- * AccountController/WishlistController. Any authenticated user (admin,
- * staff, or customer) can have notifications; not customer-specific.
+ * Self-service, customer-only — always scoped to $request->user('customer'),
+ * never an id from the request (same rule as AccountController). Only
+ * customers have a notification-reading UI today; if a future staff
+ * notification feed is built, that's a separate controller resolving
+ * $request->user() ('web' guard) instead, not a shared one — see
+ * NotificationService's own polymorphic design for why the data model
+ * already supports both.
  */
 class NotificationController extends Controller
 {
@@ -22,10 +26,11 @@ class NotificationController extends Controller
 
     public function index(Request $request)
     {
+        $customer = $request->user('customer');
         $page = max(1, (int) $request->query('page', 1));
         $pageSize = max(1, (int) $request->query('pageSize', 20));
 
-        $notifications = $this->notificationService->paginateForUser($request->user()->id, $page, $pageSize);
+        $notifications = $this->notificationService->paginateFor($customer, $page, $pageSize);
 
         return $this->paginated(
             NotificationResource::collection($notifications->items()),
@@ -33,19 +38,19 @@ class NotificationController extends Controller
                 'count' => $notifications->total(),
                 'page' => $notifications->currentPage(),
                 'pageSize' => $notifications->perPage(),
-                'unread' => $this->notificationService->unreadCountForUser($request->user()->id),
+                'unread' => $this->notificationService->unreadCountFor($customer),
             ]
         );
     }
 
     /**
      * Ownership check, not a permission gate — a notification belongs to
-     * exactly one user, and route-model binding alone doesn't scope by
-     * the authenticated session, so this is enforced explicitly here.
+     * exactly one notifiable, and route-model binding alone doesn't scope
+     * by the authenticated session, so this is enforced explicitly here.
      */
     public function markRead(Request $request, AppNotification $notification)
     {
-        if ($notification->user_id !== $request->user()->id) {
+        if (! $this->notificationService->belongsTo($notification, $request->user('customer'))) {
             return $this->fail('This action is unauthorized.', 403);
         }
 

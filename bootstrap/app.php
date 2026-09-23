@@ -41,6 +41,17 @@ return Application::configure(basePath: dirname(__DIR__))
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
+        // Error monitoring — a no-op until SENTRY_LARAVEL_DSN is set (see
+        // config/sentry.php; the SDK itself skips capturing entirely with
+        // no DSN configured, so this is safe to leave wired in every
+        // environment, local included). This is the documented Laravel
+        // 11+/bootstrap-style integration point for Sentry's Laravel SDK —
+        // it reports every exception that reaches this handler (after our
+        // own JSON-envelope render() below still runs; reporting and
+        // rendering are independent), so a real production incident is
+        // visible somewhere other than a log file nobody's watching.
+        \Sentry\Laravel\Integration::handles($exceptions);
+
         $exceptions->shouldRenderJsonWhen(
             fn (Request $request) => $request->is('api/*'),
         );

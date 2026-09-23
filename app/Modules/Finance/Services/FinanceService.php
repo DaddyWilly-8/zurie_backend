@@ -5,8 +5,10 @@ namespace App\Modules\Finance\Services;
 use App\Modules\Currency\Services\CurrencyService;
 use App\Modules\Finance\Exceptions\UnbalancedJournalEntryException;
 use App\Modules\Finance\Models\JournalEntry;
+use App\Modules\Finance\Models\JournalEntryLine;
 use App\Modules\Finance\Models\Ledger;
 use App\Modules\Finance\Models\LedgerGroup;
+use App\Support\Money;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\DB;
@@ -103,33 +105,41 @@ class FinanceService
             throw new \InvalidArgumentException('postEntry() called with zero lines — every journal entry needs at least one debit and one credit line.');
         }
 
-        // Round every line to the 2 decimals the column actually stores
-        // BEFORE checking balance — otherwise the check runs on raw float
-        // values (e.g. 33.3350000001) while the database silently stores
-        // something else, and the two can disagree by a cent.
+        // Every line is rounded into an exact Money (integer cents) the
+        // moment it arrives — see App\Support\Money's docblock for why —
+        // so the balance check below can never itself introduce float
+        // drift, however many lines an entry has (a 50-line journal
+        // voucher summed in float can genuinely drift by more than a
+        // cent; summed in integer cents it cannot drift at all).
         $lines = array_map(function (array $line) {
-            $line['amount'] = round((float) $line['amount'], 2);
+            $line['amount'] = Money::fromDecimal($line['amount']);
 
             return $line;
         }, $lines);
 
-        $totalDebits = 0.0;
-        $totalCredits = 0.0;
+        $totalDebits = Money::zero();
+        $totalCredits = Money::zero();
 
         foreach ($lines as $line) {
             if ($line['type'] === 'debit') {
-                $totalDebits += $line['amount'];
+                $totalDebits = $totalDebits->add($line['amount']);
             } else {
-                $totalCredits += $line['amount'];
+                $totalCredits = $totalCredits->add($line['amount']);
             }
         }
 
-        // Compared in whole cents. One cent of slack remains because VAT
-        // percentages can leave per-line fractions that round apart; a
-        // full move to integer minor units is the long-term fix.
-        if (abs((int) round($totalDebits * 100) - (int) round($totalCredits * 100)) > 1) {
-            throw new UnbalancedJournalEntryException($totalDebits, $totalCredits);
+        // One cent of slack remains here deliberately — not float
+        // tolerance (there is none left, the sums above are exact), but a
+        // genuine business tolerance: VAT-percentage math on independent
+        // lines can leave a caller's total legitimately one cent short or
+        // over after each line rounds to its own nearest cent.
+        if (abs($totalDebits->cents() - $totalCredits->cents()) > 1) {
+            throw new UnbalancedJournalEntryException($totalDebits->toFloat(), $totalCredits->toFloat());
         }
+
+        // Lines carry Money internally for the check above; postEntry()'s
+        // own line-storage and applyToLedgerBalance() take Money too now,
+        // so nothing downstream reintroduces the exact amount as a float.
 
         return DB::transaction(function () use ($lines, $narration, $referenceType, $referenceId, $createdBy, $date, $currencyId, $exchangeRate) {
             $this->lockLedgersInOrder(array_column($lines, 'ledger_id'));
@@ -161,13 +171,16 @@ class FinanceService
             $costCenterIds = [];
 
             foreach ($lines as $line) {
+                /** @var Money $amount */
+                $amount = $line['amount'];
+
                 $entry->lines()->create([
                     'ledger_id' => $line['ledger_id'],
                     'type' => $line['type'],
-                    'amount' => $line['amount'],
+                    'amount' => $amount->toDecimalString(),
                 ]);
 
-                $this->applyToLedgerBalance($line['ledger_id'], $line['type'], (float) $line['amount']);
+                $this->applyToLedgerBalance($line['ledger_id'], $line['type'], $amount);
 
                 if (! empty($line['cost_center_id'])) {
                     $costCenterIds[$line['cost_center_id']] = true;
@@ -234,7 +247,7 @@ class FinanceService
             $this->lockLedgersInOrder($entry->lines->pluck('ledger_id')->all());
 
             foreach ($entry->lines as $line) {
-                $this->applyToLedgerBalance($line->ledger_id, $line->type === 'debit' ? 'credit' : 'debit', (float) $line->amount);
+                $this->applyToLedgerBalance($line->ledger_id, $line->type === 'debit' ? 'credit' : 'debit', Money::fromDecimal($line->amount));
             }
 
             $entry->delete();
@@ -245,8 +258,10 @@ class FinanceService
      * Recomputes each ledger's balance from opening_balance plus every
      * journal line (same own-direction rule as applyToLedgerBalance()) and
      * returns the ledgers whose stored current_balance disagrees. With
-     * $fix = true the stored value is overwritten. Compared in whole
-     * hundredths so float noise never reports false drift.
+     * $fix = true the stored value is overwritten. Every intermediate sum
+     * is exact integer-cent Money, not float, so drift this reports is
+     * always real drift in the data — never an artifact of summing floats
+     * across however many journal lines a ledger has accumulated.
      *
      * @return array<int, array{ledgerId: int, name: string, code: string, stored: float, expected: float, difference: float}>
      */
@@ -266,24 +281,27 @@ class FinanceService
                 $normalBalanceIsDebit = ! $normalBalanceIsDebit;
             }
 
-            $expected = (float) $ledger->opening_balance;
+            $expected = Money::fromDecimal($ledger->opening_balance);
             foreach ($sums->get($ledger->id, collect()) as $row) {
-                $expected += ((($row->type === 'debit') === $normalBalanceIsDebit) ? 1 : -1) * (float) $row->total;
+                $rowAmount = Money::fromDecimal($row->total);
+                $expected = ((($row->type === 'debit') === $normalBalanceIsDebit))
+                    ? $expected->add($rowAmount)
+                    : $expected->subtract($rowAmount);
             }
 
-            $stored = (float) $ledger->current_balance;
-            if ((int) round($stored * 100) !== (int) round($expected * 100)) {
+            $stored = Money::fromDecimal($ledger->current_balance);
+            if (! $stored->equals($expected)) {
                 $drift[] = [
                     'ledgerId' => $ledger->id,
                     'name' => $ledger->name,
                     'code' => $ledger->code,
-                    'stored' => $stored,
-                    'expected' => round($expected, 2),
-                    'difference' => round($stored - $expected, 2),
+                    'stored' => $stored->toFloat(),
+                    'expected' => $expected->toFloat(),
+                    'difference' => $stored->subtract($expected)->toFloat(),
                 ];
 
                 if ($fix) {
-                    $ledger->update(['current_balance' => round($expected, 2)]);
+                    $ledger->update(['current_balance' => $expected->toDecimalString()]);
                 }
             }
         }
@@ -324,7 +342,7 @@ class FinanceService
      * opposite normal balance of its group's nature, since it exists to
      * be subtracted from its parent category rather than added to it.
      */
-    private function applyToLedgerBalance(int $ledgerId, string $type, float $amount): void
+    private function applyToLedgerBalance(int $ledgerId, string $type, Money $amount): void
     {
         $ledger = Ledger::query()->with('group')->where('id', $ledgerId)->lockForUpdate()->first();
 
@@ -332,9 +350,19 @@ class FinanceService
         if ($ledger->is_contra) {
             $normalBalanceIsDebit = ! $normalBalanceIsDebit;
         }
-        $direction = ($type === 'debit') === $normalBalanceIsDebit ? 1 : -1;
+        $movesInNormalDirection = ($type === 'debit') === $normalBalanceIsDebit;
 
-        $ledger->current_balance = (float) $ledger->current_balance + ($direction * $amount);
+        // The accumulating value in this whole system — every posting for
+        // the business's lifetime adds/subtracts here. Done in exact
+        // integer-cent Money rather than float specifically because this
+        // is the one place float drift would be silent, permanent, and
+        // compounding (a per-transaction rounding gap you'd never notice
+        // until finance:reconcile flagged a books-vs-journal mismatch
+        // months later). See App\Support\Money's docblock.
+        $current = Money::fromDecimal($ledger->current_balance);
+        $new = $movesInNormalDirection ? $current->add($amount) : $current->subtract($amount);
+
+        $ledger->current_balance = $new->toDecimalString();
         $ledger->save();
     }
 
@@ -349,6 +377,66 @@ class FinanceService
         $group = $this->ledgerGroupByCode($groupCode);
 
         return (float) Ledger::where('ledger_group_id', $group->id)->sum('current_balance');
+    }
+
+    /**
+     * Same "own normal direction positive" figure as a system ledger's
+     * current_balance, but computed from only the journal lines posted
+     * within [$from, $to] instead of the all-time running total — the
+     * period-scoped counterpart to systemLedger()->current_balance,
+     * needed because current_balance itself is never date-partitioned
+     * (it's a single incrementally-adjusted total since inception).
+     */
+    public function ledgerMovementInPeriod(string $ledgerCode, ?string $from, ?string $to): float
+    {
+        $ledger = $this->systemLedger($ledgerCode);
+        $normalBalanceIsDebit = in_array($ledger->group->nature, ['asset', 'expense'], true);
+        if ($ledger->is_contra) {
+            $normalBalanceIsDebit = ! $normalBalanceIsDebit;
+        }
+
+        $debits = Money::fromDecimal((string) JournalEntryLine::query()
+            ->where('ledger_id', $ledger->id)->where('type', 'debit')
+            ->whereHas('entry', fn ($query) => $query
+                ->when($from !== null, fn ($q) => $q->whereDate('date', '>=', $from))
+                ->when($to !== null, fn ($q) => $q->whereDate('date', '<=', $to)))
+            ->sum('amount'));
+
+        $credits = Money::fromDecimal((string) JournalEntryLine::query()
+            ->where('ledger_id', $ledger->id)->where('type', 'credit')
+            ->whereHas('entry', fn ($query) => $query
+                ->when($from !== null, fn ($q) => $q->whereDate('date', '>=', $from))
+                ->when($to !== null, fn ($q) => $q->whereDate('date', '<=', $to)))
+            ->sum('amount'));
+
+        return ($normalBalanceIsDebit ? $debits->subtract($credits) : $credits->subtract($debits))->toFloat();
+    }
+
+    /**
+     * Period-scoped counterpart to sumLedgersInGroup() — every ledger
+     * under a group's own-direction movement within [$from, $to].
+     */
+    public function groupMovementInPeriod(string $groupCode, ?string $from, ?string $to): float
+    {
+        $group = $this->ledgerGroupByCode($groupCode);
+        $ledgerIds = Ledger::where('ledger_group_id', $group->id)->pluck('id');
+        $normalBalanceIsDebit = in_array($group->nature, ['asset', 'expense'], true);
+
+        $debits = Money::fromDecimal((string) JournalEntryLine::query()
+            ->whereIn('ledger_id', $ledgerIds)->where('type', 'debit')
+            ->whereHas('entry', fn ($query) => $query
+                ->when($from !== null, fn ($q) => $q->whereDate('date', '>=', $from))
+                ->when($to !== null, fn ($q) => $q->whereDate('date', '<=', $to)))
+            ->sum('amount'));
+
+        $credits = Money::fromDecimal((string) JournalEntryLine::query()
+            ->whereIn('ledger_id', $ledgerIds)->where('type', 'credit')
+            ->whereHas('entry', fn ($query) => $query
+                ->when($from !== null, fn ($q) => $q->whereDate('date', '>=', $from))
+                ->when($to !== null, fn ($q) => $q->whereDate('date', '<=', $to)))
+            ->sum('amount'));
+
+        return ($normalBalanceIsDebit ? $debits->subtract($credits) : $credits->subtract($debits))->toFloat();
     }
 
     /**
@@ -440,8 +528,11 @@ class FinanceService
         $ledgers = Ledger::query()->with('group')->get();
 
         $buckets = ['asset' => [], 'liability' => [], 'equity' => []];
-        $totals = ['asset' => 0.0, 'liability' => 0.0, 'equity' => 0.0];
-        $netIncome = 0.0;
+        // Money, not float — a real business can accumulate dozens of
+        // per-supplier payable ledgers under Liabilities alone, and
+        // summing that many floats is exactly where drift accumulates.
+        $totals = ['asset' => Money::zero(), 'liability' => Money::zero(), 'equity' => Money::zero()];
+        $netIncome = Money::zero();
 
         foreach ($ledgers as $ledger) {
             $nature = $ledger->group->nature;
@@ -450,34 +541,37 @@ class FinanceService
             // nature (contra flip included at write time) — the same
             // fact trialBalance() relies on. No re-derivation or sign
             // flip needed here; using the raw value directly is correct.
-            $balance = abs((float) $ledger->current_balance) < 0.005 ? 0.0 : (float) $ledger->current_balance;
+            $balance = Money::fromDecimal($ledger->current_balance);
 
             $row = [
                 'ledgerId' => $ledger->id,
                 'name' => $ledger->name,
                 'code' => $ledger->code,
-                'balance' => $balance,
+                'balance' => $balance->toFloat(),
             ];
 
             if (in_array($nature, ['asset', 'liability', 'equity'], true)) {
                 $buckets[$nature][$ledger->group->name][] = $row;
-                $totals[$nature] += $balance;
+                $totals[$nature] = $totals[$nature]->add($balance);
             } elseif ($nature === 'income') {
-                $netIncome += $balance;
+                $netIncome = $netIncome->add($balance);
             } elseif ($nature === 'expense') {
-                $netIncome -= $balance;
+                $netIncome = $netIncome->subtract($balance);
             }
         }
 
+        $equityWithRetainedEarnings = $totals['equity']->add($netIncome);
+        $liabilitiesPlusEquity = $totals['liability']->add($equityWithRetainedEarnings);
+
         return [
-            'assets' => ['total' => $totals['asset'], 'groups' => $buckets['asset']],
-            'liabilities' => ['total' => $totals['liability'], 'groups' => $buckets['liability']],
+            'assets' => ['total' => $totals['asset']->toFloat(), 'groups' => $buckets['asset']],
+            'liabilities' => ['total' => $totals['liability']->toFloat(), 'groups' => $buckets['liability']],
             'equity' => [
-                'total' => $totals['equity'] + $netIncome,
+                'total' => $equityWithRetainedEarnings->toFloat(),
                 'groups' => $buckets['equity'],
-                'retainedEarnings' => $netIncome,
+                'retainedEarnings' => $netIncome->toFloat(),
             ],
-            'isBalanced' => abs($totals['asset'] - ($totals['liability'] + $totals['equity'] + $netIncome)) < 0.01,
+            'isBalanced' => $totals['asset']->equals($liabilitiesPlusEquity),
         ];
     }
 

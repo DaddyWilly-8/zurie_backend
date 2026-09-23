@@ -18,14 +18,28 @@ use Illuminate\Support\Str;
  */
 class MediaService
 {
+    /**
+     * Defaults to the local 'public' disk (unchanged behavior) — set
+     * MEDIA_DISK=s3 in .env to move uploads to object storage with no
+     * code change; config/filesystems.php already has a real 's3' disk
+     * definition reading the AWS_* vars. A single named disk, not
+     * `Storage::disk(config('filesystems.default'))`, so a deploy can
+     * change the *default* disk for other purposes without silently
+     * moving where product/category images live too.
+     */
+    private function disk(): string
+    {
+        return config('filesystems.media_disk', 'public');
+    }
+
     public function store(UploadedFile $file, string $folder, ?int $uploadedBy): Media
     {
         $filename = Str::uuid()->toString().'.'.$file->getClientOriginalExtension();
 
-        $path = $file->storeAs($folder, $filename, 'public');
+        $path = $file->storeAs($folder, $filename, $this->disk());
 
         return Media::create([
-            'url' => Storage::disk('public')->url($path),
+            'url' => Storage::disk($this->disk())->url($path),
             'folder' => $folder,
             'original_filename' => $file->getClientOriginalName(),
             'mime_type' => $file->getClientMimeType(),
@@ -67,11 +81,11 @@ class MediaService
 
     private function deleteFile(string $url): void
     {
-        $prefix = Storage::disk('public')->url('');
+        $prefix = Storage::disk($this->disk())->url('');
         $relative = Str::after($url, $prefix);
 
-        if ($relative !== $url && Storage::disk('public')->exists($relative)) {
-            Storage::disk('public')->delete($relative);
+        if ($relative !== $url && Storage::disk($this->disk())->exists($relative)) {
+            Storage::disk($this->disk())->delete($relative);
         }
     }
 }

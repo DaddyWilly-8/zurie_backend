@@ -22,6 +22,7 @@ class AuthUserResource extends JsonResource
                 'id' => $this->id,
                 'name' => $this->name,
                 'email' => $this->email,
+                'twoFactorEnabled' => $this->hasTwoFactorEnabled(),
             ],
             'roles' => $this->roles->pluck('name')->values(),
             'permissions' => $this->permissionKeys(),

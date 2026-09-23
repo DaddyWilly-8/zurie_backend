@@ -42,3 +42,16 @@ Schedule::call(fn () => \Illuminate\Support\Facades\DB::table('idempotency_keys'
     ->name('prune-idempotency-keys')
     ->dailyAt('01:00')
     ->timezone(config('app.timezone'));
+
+// "An untested backup is not a backup" — restores the latest
+// backup:database dump into a disposable scratch database, compares
+// every table's row count against live, and reconciles the restored
+// ledgers too (see Console\Commands\VerifyBackupRestore). Weekly, not
+// nightly — it's a correctness check on a backup that already runs
+// nightly, not a substitute for it. Sunday, after the night's backup and
+// reconcile have both had time to finish.
+Schedule::command('backup:verify-restore')
+    ->weeklyOn(0, '02:00')
+    ->timezone(config('app.timezone'))
+    ->withoutOverlapping()
+    ->onFailure(fn () => \Illuminate\Support\Facades\Log::critical('backup:verify-restore failed — the latest backup may not be restorable. Investigate immediately.'));

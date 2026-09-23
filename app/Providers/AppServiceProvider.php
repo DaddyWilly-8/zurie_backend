@@ -79,5 +79,20 @@ class AppServiceProvider extends ServiceProvider
         RateLimiter::for('password-reset', function (Request $request) {
             return Limit::perMinute(5)->by($request->ip());
         });
+
+        // Backs `throttle:two-factor` on POST /auth/two-factor/challenge.
+        // A TOTP code is only 6 digits (1,000,000 possibilities) — far
+        // more guessable than a password over enough attempts — so this
+        // is deliberately tighter than the generic `login` limiter.
+        // Keyed by session id + IP rather than email: this endpoint runs
+        // mid-challenge, before the caller is re-authenticated, so there's
+        // no user() to key by, and the pending challenge itself is already
+        // scoped to one browser session (see AuthService::
+        // challengeTwoFactor()).
+        RateLimiter::for('two-factor', function (Request $request) {
+            $key = $request->session()->getId().'|'.$request->ip();
+
+            return Limit::perMinute(5)->by($key);
+        });
     }
 }

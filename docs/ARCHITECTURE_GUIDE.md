@@ -73,7 +73,7 @@ Writes across modules always go through the other module's Service.
 | Auth | Sanctum **cookie/session SPA auth** | Login = `POST /api/v1/auth/login` (`Modules/Auth/routes.php`). No bearer token is ever returned. Needs CSRF cookie first (`GET /sanctum/csrf-cookie`). |
 | Authorization | `Modules/Auth/Middleware/EnsurePermission.php` | Route-level: `->middleware('permission:report_view')`. The key string must exist in the `permissions` table (column `key`) or **everyone gets 403**. |
 | Rate limits | `AppServiceProvider` + `throttle:login` etc. | Login 5/min per email+IP; register/forgot/reset are throttled too. |
-| Audit log | spatie activitylog, `activity('x')->log(...)` | Written manually inside services. Viewable in Admin → Activity. |
+| Audit log | spatie activitylog, `activity('x')->log(...)` | Written manually inside services, not automatic — a module with no `activity()` call leaves no trail. Viewable in Admin → Activity. Covers auth events, Order/GRN/PurchaseOrder/Purchase/Delivery/InventoryTransfer/Expense, RoleService/UserService's escalation-guard actions, and (as of this pass) every Transaction subtype create+delete, Finance's Ledger/LedgerGroup/CostCenter CRUD, and `finance:reconcile --fix`'s corrections. When adding a module that creates, deletes, or silently corrects a money or stock record, add an `activity()` call — it was previously easy to ship a whole module (Transaction had zero logging until this pass) without one. |
 | Config knobs | `config/zurie.php` | e.g. `default_vat_percentage`. VAT is server-computed, never trusted from the client. |
 
 ### RBAC — the #1 source of "why 403?"
@@ -89,6 +89,38 @@ Writes across modules always go through the other module's Service.
 - Privilege-escalation guards (added in the security pass): `RoleService::assertCanGrantPermission()`
   (you can only grant permissions you hold) and `UserService::assertNotActingOnSelf()`
   (you cannot change your own roles).
+
+### Two-factor authentication (TOTP, optional per account)
+
+`Modules/Auth/Services/TwoFactorService.php` — RFC 6238 (the standard Google Authenticator/Authy/1Password
+all implement), via `pragmarx/google2fa`. Any account can enable it (not yet mandated for any role — a
+future decision, not a gap in the code); `users.two_factor_secret`/`two_factor_recovery_codes` are
+`encrypted` casts (APP_KEY), never plaintext.
+
+```
+ Setup (authenticated):
+   POST /auth/two-factor/enable   → { secret, qrCodeUrl }         (does NOT protect the account yet)
+   POST /auth/two-factor/confirm  { code } → { recoveryCodes[] }  (proves the app actually works — THIS activates it)
+   POST /auth/two-factor/disable  { password }                    (password reconfirmation required)
+   GET  /auth/two-factor/status   → { enabled }
+
+ Login, when the account has 2FA confirmed:
+   POST /auth/login { email, password }
+     → password correct, 2FA confirmed: Auth::guard('web')->logout() immediately (never leaves a full
+       session), stores { two_factor_user_id, two_factor_expires_at (+5 min) } in the (regenerated) session
+     → responds { twoFactorRequired: true } — NOT the user object
+   POST /auth/two-factor/challenge { code }     (throttle:two-factor — 5/min by session-id+IP)
+     → verifies a live TOTP code OR a single-use recovery code against the pending marker
+     → only NOW: Auth::guard('web')->login($user), session regenerate
+```
+
+`AuthService::attempt()`'s return type changed from `User` to
+`array{status: 'authenticated', user: User}|array{status: 'two_factor_required'}` — check both call sites
+(`AuthController::login()`) if you touch this. `challengeTwoFactor()` fails closed: an expired or
+already-consumed pending marker forces the caller back through `attempt()` with their password again,
+never leaves a long-lived half-authenticated window. Verified with 11 tests in `tests/Feature/Auth/
+TwoFactorTest.php` (including the full login → pending → wrong-code-rejected → correct-code-authenticates
+round trip) plus a second pass over real HTTP with a live-generated TOTP code.
 
 ## 4. The money core — read this carefully, it's the heart
 
@@ -115,6 +147,9 @@ during the stakeholder merge (stale codes collided after ids were remapped).
 - Every module posts through this. Nobody writes `journal_entries`/`ledgers` directly.
 - `postSimpleEntry()` = 2-line convenience wrapper. `deleteEntry()` = the ONLY safe way to hard-delete
   a posted entry (see 4.3).
+- Every amount is converted to `App\Support\Money` (integer cents, never float) the moment it enters
+  `postEntry()`, and stays Money through the balance check and `applyToLedgerBalance()` — see §14b's
+  "Money precision" row for why and how this was verified.
 
 ### 4.3 THE sign convention (this trips everybody)
 
@@ -204,6 +239,65 @@ Deleting any of these goes through `FinanceService::deleteEntry()` (balance-safe
 - **ProformaInvoice** — quote-like document with line items; no stock/ledger effect, and there is no convert-to-order step in the code today.
 - **Report** — see §10.
 
+## 9a. The customer/staff split
+
+Two completely independent logins share this backend, on two Auth guards. `Modules/Auth/Models/User` is
+**staff-only** — `'web'` guard, RBAC (roles/permissions), created by an existing admin
+(`UserController::store()`), never self-registered. `Modules/Auth/Models/CustomerAccount` (table
+`customer_accounts`) is the **storefront login** — `'customer'` guard, no roles/permissions at all,
+self-registers via `POST /customer/auth/register`.
+
+```
+ users               ──'web' guard───▶  /auth/*            (staff: login, 2FA, RBAC-gated admin/* routes)
+ customer_accounts   ──'customer' guard▶ /customer/auth/*   (storefront: login, register, Google)
+                                          + account/*, /products/{id}/reviews POST  (self-service, customer-only)
+```
+
+- **Same session cookie, independent logins.** Both guards are `driver: session` (`config/auth.php`) and share
+  the one cookie the api group's `statefulApi()` middleware makes stateful — but Laravel keys each guard's
+  login state separately within that session, so being logged into one implies nothing about the other. This
+  is what fixed two real bugs: an admin browsing the storefront no longer appears logged in as a customer, and
+  a customer session can never reach an admin (`permission:xxx`) route — not because of an extra check, but
+  because `EnsurePermission`/every admin controller resolve `$request->user()` (the **'web'** guard implicitly),
+  and a customer was never logged into 'web' at all.
+- **`auth:customer`, not `auth:sanctum`, protects customer-only routes.** Laravel's plain `Authenticate`
+  middleware pointed at the 'customer' guard — deliberately not Sanctum's own guard-cycling (`config/sanctum.php`
+  `'guard' => ['web']` is untouched), so this addition changes nothing about how any existing staff route
+  resolves `auth:sanctum`. The api group's `statefulApi()` has already made every request session-aware
+  regardless of which guard checks it afterward, so `auth:customer` needs no CSRF/session setup of its own.
+- **The link to a real Customer/stakeholder record is one-directional and new**: `customer_accounts.stakeholder_id`
+  (nullable, unique). The pre-split `stakeholders.user_id` column (→ `users`) still exists but is deliberately
+  **left untouched, orphaned for any pre-split account** — see the `customer_accounts` migration's docblock.
+  `CustomerService::findByUserId()` is `@deprecated`; self-service code uses `findById()` with a
+  CustomerAccount's own `stakeholder_id` instead. Admin-facing `CustomerResource.isRegistered` is computed via
+  a `EXISTS(...)` subquery against `customer_accounts` (`CustomerService::withAccountFlag()`), not the stale
+  `user_id` check.
+- **Notifications became polymorphic** (`notifiable_type`/`notifiable_id`, not a plain `user_id`) — a
+  notification for `customer_accounts` id 5 and one for `users` id 5 would otherwise collide on the same
+  integer. `NotificationService::notify(Model $notifiable, ...)` takes either model directly.
+- **Password resets need to know which guard.** `config/auth.php` `passwords` has two brokers
+  (`users` → `password_reset_tokens`, `customer_accounts` → `customer_password_reset_tokens`, a
+  separate table so the same email existing in both tables can never collide on one token row). The reset
+  *email link* itself is built once, globally, by `AuthModuleServiceProvider`'s `ResetPassword::createUrlUsing()`
+  — it branches on the notifiable's class to send staff to `/admin/reset-password` (frontend) and customers to
+  `/reset-password`, since nothing else about the notification event says which broker fired it.
+- **Google login is customer-only** — `CustomerAuthController`/`CustomerAccountService::findOrCreateForSocialite()`.
+  Simplified from the pre-split version: matches by email directly rather than also tracking an
+  `oauth_identities` row first (Google's verified-email guarantee makes the case that extra indirection existed
+  for vanishingly unlikely) — see `findOrCreateForSocialite()`'s docblock if that behavior is ever needed again.
+- **Frontend**: `services/auth/auth.service.ts` (staff) and `services/auth/customer-auth.service.ts` (customer)
+  are separate files calling separate endpoint groups (`API_ENDPOINTS.auth` vs `.customerAuth`) — never share
+  one service. `providers/customer-auth-provider.tsx` and `providers/admin-auth-provider.tsx` are similarly
+  independent; the admin guard's existing "redirect to `/admin/login` if `GET /auth/user` fails" logic is what
+  now correctly locks a customer session out of `/admin/*`, since that call genuinely 401s for a customer.
+- **Testing gotcha**: a test driving several requests against *two different guards* in one method needs
+  `config(['session.driver' => 'database'])` in `setUp()` — the default `array` driver (phpunit.xml) backs
+  onto one in-memory Store shared oddly across simulated requests within a test and produces flaky,
+  order-dependent 401s that don't reflect real multi-request browser behavior at all (reproduced and worked
+  around in `tests/Feature/CustomerAuth/CustomerStaffSplitTest.php` — the one "both guards logged in at once"
+  scenario too failed this way in every driver tried, so it's verified by real curl transcript in this file's
+  history instead of an automated test).
+
 ## 10. Reports = live derivation
 
 `Modules/Report/Services/ReportService.php` owns no data. It calls other Services:
@@ -219,6 +313,60 @@ Deleting any of these goes through `FinanceService::deleteEntry()` (balance-safe
 | `creditors` | `FinanceService::payableBalancesBySupplier()` (suppliers *do* have payable ledgers) |
 | `purchase-summary` | `PurchaseOrderService::totalsByStatus()` + `GrnService::count()` |
 | `store-stock/{outletId}` | `InventoryService::allStockRows($outletId)` |
+
+## 10b. How the modules connect (dependency map)
+
+Generated from each Service's constructor injections (cross-module only), so it shows who really calls whom.
+
+```
+                    ┌──────────── READERS (derive, own no data) ────────────┐
+                    │  Report · Dashboard · Target · CashierSession         │
+                    └───────────────▲───────────────────────────────────────┘
+                                    │ read via Services
+    ┌───────────── BUSINESS FLOWS (orchestrate; the "verbs") ───────────────┐
+    │  Order (sale)   Procurement (PO/GRN)   Purchase   InventoryTransfer   │
+    │  Transaction (payments/receipts…)   Expense   Delivery   Proforma     │
+    └───────▲──────────────▲─────────────────▲──────────────────▲───────────┘
+            │              │                 │                  │
+    ┌───────┴──────────────┴─────────────────┴──────────────────┴───────────┐
+    │  CORE ENGINES (the "nouns" everything posts into)                      │
+    │  Finance (ledger)   Inventory (stock)   Vat   Currency                 │
+    └───────▲──────────────▲──────────────────────────────────────────────────┘
+            │              │
+    ┌───────┴──────────────┴─────────────────────────────────────────────────┐
+    │  MASTER DATA (things being sold/bought/from)                            │
+    │  Product · Customer/Supplier/Stakeholder · Outlet · PriceList · Coupon  │
+    └────────────────────────────────────────────────────────────────────────┘
+```
+
+Calls go **down** (or sideways into the engines), never up. Master data and engines never call flows.
+
+| Module | Injects (other modules' Services) |
+|---|---|
+| Order | Coupon, Currency, Customer, Finance, Inventory, Notification, Outlet, PriceList, Product, Vat |
+| Procurement | Currency, Finance, Inventory, Product, Vat |
+| Purchase | Currency, Finance, Inventory, Product, Supplier, Vat |
+| InventoryTransfer | Finance, Inventory, Outlet, Product |
+| Transaction | Finance |
+| Expense | Finance |
+| Report | Finance, Inventory, Order, Procurement, Product, Stakeholder, Transaction |
+| Dashboard | Customer, Inventory, Order, Product |
+| Target, CashierSession | Order |
+| Finance | Currency |
+| Inventory | Outlet |
+| Product | Inventory, Media |
+| Supplier | Finance |
+| ProformaInvoice | Currency |
+| Auth | Customer |
+
+Two rules the map obeys:
+
+1. **Flows post into engines.** Every business event ends in two questions: did stock change (Inventory), did money change (Finance)? Nothing else writes to those.
+2. **Cross-module links are ids and polymorphic references, not foreign keys** (e.g. `journal_entries.reference_type/id` points back at the document that caused the entry).
+
+Using it to design a new module: (1) which layer is it — flow, reader or master data; (2) which engines does it touch; (3) what Services would it inject — a long list means it does too much; (4) who calls it — if only Report, it stays at the top. Two flows must never call each other (the known case, `GrnService` ↔ `PurchaseOrderService`, is resolved by orchestrating in the controller). Example: a Stock Take module injects only `InventoryService`, `FinanceService`, `Outlet` and `Product`.
+
+Regenerate the table if it drifts: read the constructor of each `app/Modules/*/Services/*Service.php` and list injected Services from other modules.
 
 ## 11. Where do I find X? (cheat sheet)
 
@@ -288,13 +436,14 @@ Logs: `storage/logs/laravel.log`. List routes: `php artisan route:list --path=ad
 
 | Item | Done so far | Still to do |
 |---|---|---|
-| Money precision | Lines rounded to cents before the balance check; reconcile compares in cents | Move to whole-cent integers (or a decimal library) end to end; remove the 1-cent tolerance in `postEntry` |
-| Report growth | Indexes on orders / journal date / stakeholders / inventory movements | Date-range filters on reports; cache heavy aggregates; paginate the ~24 unbounded `get()` calls |
-| Operations | Nightly backup, nightly `finance:reconcile`, idempotency-key pruning, logging notes in `.env.example` | Admin 2FA, error monitoring, log rotation on the server, restore test of a backup |
-| Infrastructure | Nothing (server work) | Redis for sessions/cache/queue, object storage for uploads, real mail provider, queue worker, load test on staging |
-| Idempotency | Backend supports all money POSTs; storefront checkout and POS sale send the key | Send the key from payments, receipts, purchase orders, GRNs, transfers, expenses screens |
-| Test coverage | Ledger posting, checkout, GRN receive/un-receive, reconcile, idempotency | Payments/receipts, transfers, delivery, auth and RBAC boundaries |
-| Customer/staff split | Designed (`customer_accounts` table + `customer` guard), not started | Build it: tests first, then schema, guard, endpoints, frontend, live boundary tests |
+| Money precision | Done for the ledger core: `App\Support\Money` (integer-cents value object, Fowler's Money pattern + Stripe's minor-unit convention — see its docblock for citations) is now used by every arithmetic step in `FinanceService`: `postEntry()`'s balance check, `applyToLedgerBalance()` (the one running total every posting for the business's lifetime adds to), `deleteEntry()`, `reconcileLedgers()`, `balanceSheet()`'s bucket totals, and the period-movement helpers. Proven exact with a dedicated `MoneyTest` (10,000 accumulated postings stay exact to the cent — floats measurably drift at that volume) plus a live stress test (2,000 real postings through `postEntry`, then 5 real HTTP checkouts) both matched expected totals to the cent and left `finance:reconcile` clean. The genuine 1-cent tolerance in `postEntry()`'s balance check is kept (see its comment) — it's a real business tolerance for independently-rounded VAT lines, not float slack, since the sums either side of it are now exact | Upstream per-line calculations (Order/GRN/PurchaseOrder line totals, VAT %, discounts) still compute in plain float before handing a final amount into `postEntry()` — deliberately out of scope: `postEntry()` is the one place every module's money already funnels through (Extensibility Constitution), so fixing precision there fixes the *accumulated* ledger balances for the whole system without a full-codebase rewrite. A stray float bug could still make one line's amount wrong before it reaches `postEntry()`; extending `Money` to those modules' calculators is the next increment if warranted. Scale note: `Money` is native-int arithmetic (cheaper than the float ops it replaced, no bcmath/GMP dependency) and adds zero queries — it doesn't change the real scaling bottleneck already documented in §6.3/6.4 (lock contention on shared ledgers under concurrent checkouts). Security note: this is a pure internal-correctness fix with no new input surface — it closes a data-integrity gap (silent, permanent balance drift going undetected for months) rather than an attacker-reachable one. |
+| Report growth | Indexes on orders / journal date / stakeholders / inventory movements. `from`/`to` date filters added to Sales by Channel, Revenue Summary, Purchase Summary (`FinanceService::ledgerMovementInPeriod()`/`groupMovementInPeriod()` recompute from journal lines in the window, since `current_balance` is never date-partitioned). Trial Balance, Balance Sheet, Debtors, Creditors, Inventory Value now cached 60s (`Cache::remember`, plain TTL, no invalidation) | Debtors/Creditors/Trial Balance/Balance Sheet/Inventory Value are point-in-time balances — a date range doesn't apply to them without a bigger "period snapshot" project, deliberately not attempted. Still haven't paginated the ~24 unbounded `get()` calls elsewhere in the app. Cache means a manager can see a figure up to 60s stale after something posts. Move `CACHE_STORE` to Redis before this matters at real scale (`database` store means every cache hit is itself a query) |
+| Operations | **2FA** (TOTP, RFC 6238, `PragmaRX\Google2FA`): optional per account via `POST /auth/two-factor/{enable,confirm,disable}`, login gated by `POST /auth/two-factor/challenge` when confirmed (see §3a). Single-use recovery codes, disable requires password reconfirmation. Verified with 11 feature tests (including a real login → pending → wrong-code-rejected → correct-code-authenticates round trip) plus a second pass over real HTTP with a live TOTP code. Frontend: `app/(auth)/admin/login/page.tsx` now handles the password → pending-challenge → code steps, and a self-service `/admin/account/security` page (features/admin/account-security) lets any admin enable/disable it with a client-side-rendered QR code (the `qrcode` npm package — the TOTP secret never leaves the browser via a third-party QR-image service). **Error monitoring**: Sentry wired via `Sentry\Laravel\Integration::handles()` in `bootstrap/app.php` — a documented no-op until `SENTRY_LARAVEL_DSN` is set (`.env.example`), verified the app still boots/serves correctly with it wired in and no DSN configured. **Log rotation**: `daily` channel already existed in `config/logging.php` (14-day retention) — `.env.example` now says explicitly to set `LOG_STACK=daily` in production. **Backup restore test**: `php artisan backup:verify-restore` — restores the latest dump into a disposable scratch database, compares every table's row count against live, and runs `finance:reconcile` against the restored copy too; scheduled weekly. Verified for real: ran a live restore of the actual local backup (76/76 tables matched, restored ledgers reconciled), then verified the failure path by deliberately truncating a dump (correctly caught, clean exit code, scratch DB still dropped) | Nothing structural left — the remaining Operations work is server-side execution: actually get a Sentry DSN and confirm a real event arrives, confirm `LOG_STACK=daily` on the live server, and let `backup:verify-restore` run for real weeks in a row |
+| Infrastructure | **Redis**: `predis/predis` installed (pure-PHP client — this app's shared-hosting target can't install the `phpredis` extension) and verified end-to-end against a real local Redis instance this session — cache put/get, and a queue push/pop, both round-tripped correctly through `REDIS_CLIENT=predis`. Nothing else needs to change in code; `.env.example` documents the switch. **Object storage**: `config/filesystems.php` already had an `s3` disk reading `AWS_*` vars, but `MediaService` (the only place in the system that writes a file) was hardcoded to the `'public'` disk name — fixed to read a new `media_disk` config key (`MEDIA_DISK` env var, defaults to `'public'`, unchanged behavior), verified with a real local upload+delete round trip plus 4 feature tests including one that overrides the disk and confirms the file actually lands there. **Mail**: `config/mail.php` already supports smtp/ses/postmark/resend natively — `.env.example` now says explicitly which var to change, no code needed | Queue **worker** (a process actually consuming `QUEUE_CONNECTION=redis`, e.g. supervisor running `php artisan queue:work`) is genuinely server ops, can't be verified from here. Load test on staging — same, needs a real staging environment. Nobody has actually set `MAIL_MAILER`/`AWS_*`/`SENTRY_LARAVEL_DSN`/`REDIS_*` to real production values yet — everything above is proven to *work*, not yet turned on |
+| Idempotency | Backend supports all money POSTs; frontend now sends the key from checkout, POS sale, payments, receipts, journal vouchers, fund transfers, purchase orders, GRNs, inventory transfers, purchases and delivery dispatch | Expense has no admin frontend yet, so its create call doesn't send the key — add it when that screen is built |
+| Test coverage | 50 tests: ledger posting, checkout, GRN receive/un-receive, reconcile, idempotency, payments/receipts, journal vouchers/fund transfers, inventory transfers (all 3 types), delivery dispatch, RBAC escalation guards + a real HTTP 401/403/200 boundary, and the audit-log assertions below | Frontend component/e2e tests, the customer/staff split once built |
+| Audit trail | Was auth-only, plus a handful of manual `activity()` calls in Order/GRN/PurchaseOrder/Purchase/Delivery/InventoryTransfer/Expense/RoleService/UserService. Now also covers every Transaction subtype (Payment/Receipt/JournalVoucher/FundTransfer) create+delete, Finance's LedgerGroup/Ledger/CostCenter CRUD, and `finance:reconcile --fix` corrections (with the before/after values in `properties`) — all verified via `assertDatabaseHas('activity_log', ...)` in `tests/Feature/Finance/AuditTrailTest.php` and the Transaction tests | Still nothing logs Product/Category/Supplier/Stakeholder/PriceList/Coupon/Outlet CRUD, or CashierSession open/close — audit each module the same way (does creating/deleting/correcting it matter if nobody can see who did it?) before treating this as complete |
+| Customer/staff split | **Done** — see §9a for the full design. `customer_accounts` table + `customer` Auth guard, fully independent of staff `users`/`web`. Backend: `CustomerAuthController`, `CustomerAccountService`, polymorphic notifications, dual password brokers, Google login moved. Account/Wishlist/Review(store)/Notification re-pointed to the customer guard; admin-only Review moderation untouched. Frontend: separate `customerAuthService`/`authService`, separate providers, new `/admin/reset-password` page. Verified: 5 reliable automated tests (`CustomerStaffSplitTest`) covering register→login→self-service, customer-can't-reach-admin (401, not just 403), staff-can't-reach-customer-routes, phone-collision rejection, and per-customer data isolation (wishlist/notifications) — plus a live curl transcript proving both guards work simultaneously in one browser and that logging the customer out leaves the staff session untouched (the exact bug `CustomerAuthService::logout()`'s `regenerate()`-not-`invalidate()` fix targets). Full 83-test suite and `finance:reconcile` still clean after this change | Nothing structural — this was the last item on the original pending list. Follow-ups if they come up in practice: an actual staff-notifications feature (the polymorphic model already supports it, nothing consumes it yet); reconsidering whether `oauth_identities`/pre-split `stakeholders.user_id` should eventually be cleaned up once confirmed nothing legacy depends on them |
 
 ## 15. Suggested reading order (≈ half a day)
 

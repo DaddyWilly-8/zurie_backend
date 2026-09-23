@@ -13,9 +13,23 @@ class ReportController extends Controller
 
     public function __construct(private readonly ReportService $reportService) {}
 
-    public function salesByChannel()
+    /**
+     * `from`/`to` are optional 'YYYY-MM-DD' query params, shared by every
+     * period-based report endpoint below — omit both for the report's
+     * all-time figure.
+     *
+     * @return array{0: ?string, 1: ?string}
+     */
+    private function dateRange(Request $request): array
     {
-        return $this->ok($this->reportService->salesByChannel());
+        return [$request->query('from'), $request->query('to')];
+    }
+
+    public function salesByChannel(Request $request)
+    {
+        [$from, $to] = $this->dateRange($request);
+
+        return $this->ok($this->reportService->salesByChannel($from, $to));
     }
 
     public function lowStock()
@@ -23,9 +37,11 @@ class ReportController extends Controller
         return $this->ok($this->reportService->lowStockAlerts());
     }
 
-    public function revenueSummary()
+    public function revenueSummary(Request $request)
     {
-        return $this->ok($this->reportService->revenueSummary());
+        [$from, $to] = $this->dateRange($request);
+
+        return $this->ok($this->reportService->revenueSummary($from, $to));
     }
 
     public function trialBalance()
@@ -55,9 +71,11 @@ class ReportController extends Controller
         return $this->ok($this->reportService->creditors());
     }
 
-    public function purchaseSummary()
+    public function purchaseSummary(Request $request)
     {
-        return $this->ok($this->reportService->purchaseSummary());
+        [$from, $to] = $this->dateRange($request);
+
+        return $this->ok($this->reportService->purchaseSummary($from, $to));
     }
 
     public function storeStock(int $outletId)

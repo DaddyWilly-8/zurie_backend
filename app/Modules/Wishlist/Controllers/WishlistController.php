@@ -11,9 +11,9 @@ use App\Support\Http\ApiResponse;
 use Illuminate\Http\Request;
 
 /**
- * Self-service — always scoped to the authenticated user's own linked
- * Customer record, never an id read from the request, same rule as
- * AccountController.
+ * Self-service, customer-only — always scoped to the logged-in
+ * CustomerAccount's own linked Customer record, never an id read from
+ * the request, same rule as AccountController.
  */
 class WishlistController extends Controller
 {
@@ -24,9 +24,16 @@ class WishlistController extends Controller
         private readonly CustomerService $customerService,
     ) {}
 
+    private function findCustomer(Request $request)
+    {
+        $stakeholderId = $request->user('customer')->stakeholder_id;
+
+        return $stakeholderId !== null ? $this->customerService->findById($stakeholderId) : null;
+    }
+
     public function index(Request $request)
     {
-        $customer = $this->customerService->findByUserId($request->user()->id);
+        $customer = $this->findCustomer($request);
         if ($customer === null) {
             return $this->ok([]);
         }
@@ -36,7 +43,7 @@ class WishlistController extends Controller
 
     public function store(AddWishlistItemRequest $request)
     {
-        $customer = $this->customerService->findByUserId($request->user()->id);
+        $customer = $this->findCustomer($request);
         if ($customer === null) {
             return $this->fail('No customer profile is linked to this account.', 422);
         }
@@ -48,7 +55,7 @@ class WishlistController extends Controller
 
     public function destroy(Request $request, int $productId)
     {
-        $customer = $this->customerService->findByUserId($request->user()->id);
+        $customer = $this->findCustomer($request);
         if ($customer !== null) {
             $this->wishlistService->remove($customer->id, $productId);
         }

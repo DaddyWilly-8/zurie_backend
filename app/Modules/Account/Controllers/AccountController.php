@@ -2,20 +2,20 @@
 
 namespace App\Modules\Account\Controllers;
 
-use App\Http\Controllers\Controller;
 use App\Modules\Customer\Resources\CustomerResource;
 use App\Modules\Customer\Services\CustomerService;
 use App\Modules\Order\Resources\OrderResource;
 use App\Modules\Order\Services\OrderService;
+use App\Http\Controllers\Controller;
 use App\Support\Http\ApiResponse;
 use Illuminate\Http\Request;
 
 /**
- * Self-service endpoints for the authenticated user's own customer profile
- * and order history — deliberately role-agnostic (any authenticated user
- * can call these, not just `customer`-role accounts). Always scoped to
- * `$request->user()->id`, never an id read from the request — a customer
- * can never view another customer's data through this controller.
+ * Self-service endpoints for the logged-in customer's own profile and
+ * order history — customer-only ('customer' guard) since the customer/
+ * staff split. Always scoped to $request->user('customer')->stakeholder_id,
+ * never an id read from the request — a customer can never view another
+ * customer's data through this controller.
  */
 class AccountController extends Controller
 {
@@ -27,21 +27,21 @@ class AccountController extends Controller
     ) {}
 
     /**
-     * Returns null data if the authenticated user has never linked a
-     * Customer record (e.g. an admin/staff account that never registered
-     * as a storefront customer) — not a 404, since "no profile yet" is an
-     * expected state, not an error.
+     * Returns null data if the account has never linked a Customer
+     * record (e.g. a Google sign-up that hasn't completed its profile
+     * yet) — not a 404, since "no profile yet" is an expected state, not
+     * an error.
      */
     public function profile(Request $request)
     {
-        $customer = $this->customerService->findByUserId($request->user()->id);
+        $customer = $this->findCustomer($request);
 
         return $this->ok($customer ? new CustomerResource($customer) : null);
     }
 
     public function orders(Request $request)
     {
-        $customer = $this->customerService->findByUserId($request->user()->id);
+        $customer = $this->findCustomer($request);
 
         if ($customer === null) {
             return $this->paginated([], ['count' => 0, 'page' => 1, 'pageSize' => 20]);
@@ -60,5 +60,12 @@ class AccountController extends Controller
                 'pageSize' => $orders->perPage(),
             ]
         );
+    }
+
+    private function findCustomer(Request $request)
+    {
+        $stakeholderId = $request->user('customer')->stakeholder_id;
+
+        return $stakeholderId !== null ? $this->customerService->findById($stakeholderId) : null;
     }
 }

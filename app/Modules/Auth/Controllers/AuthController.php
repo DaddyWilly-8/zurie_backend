@@ -5,17 +5,21 @@ namespace App\Modules\Auth\Controllers;
 use App\Http\Controllers\Controller;
 use App\Modules\Auth\Requests\ForgotPasswordRequest;
 use App\Modules\Auth\Requests\LoginRequest;
-use App\Modules\Auth\Requests\RegisterRequest;
 use App\Modules\Auth\Requests\ResetPasswordRequest;
+use App\Modules\Auth\Requests\TwoFactorChallengeRequest;
 use App\Modules\Auth\Resources\AuthUserResource;
 use App\Modules\Auth\Services\AuthService;
 use App\Support\Http\ApiResponse;
 use Illuminate\Auth\Events\PasswordReset;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Password;
-use Laravel\Socialite\Facades\Socialite;
 
+/**
+ * Staff-only ('web' guard) from the customer/staff split onward — no
+ * self-registration and no Google login here; staff accounts are created
+ * by an existing admin (UserService::create()). See
+ * CustomerAuthController for the storefront equivalent.
+ */
 class AuthController extends Controller
 {
     use ApiResponse;
@@ -26,66 +30,28 @@ class AuthController extends Controller
     {
         $credentials = $request->validated();
 
-        $user = $this->authService->attempt($credentials['email'], $credentials['password']);
+        $result = $this->authService->attempt($credentials['email'], $credentials['password']);
 
-        return $this->ok(new AuthUserResource($user));
-    }
-
-    /**
-     * Public storefront signup — see AuthService::register(). Never
-     * required to complete a purchase; POST /orders (checkout) has no
-     * auth:sanctum requirement and works standalone as guest checkout.
-     */
-    public function register(RegisterRequest $request)
-    {
-        $user = $this->authService->register($request->validated());
-
-        return $this->created(new AuthUserResource($user));
-    }
-
-    /**
-     * GET /auth/google/redirect — a full browser navigation (not an XHR:
-     * the caller is a plain <a href> in the frontend, never apiClient),
-     * since establishing the session cookie at the end of this round trip
-     * only works if the browser itself follows the whole redirect chain.
-     * See AuthController::handleGoogleCallback() and AuthService::
-     * loginOrRegisterViaSocialite().
-     */
-    public function redirectToGoogle()
-    {
-        return Socialite::driver('google')->redirect();
-    }
-
-    /**
-     * GET /auth/google/callback — Google lands the browser here directly
-     * (it's the configured GOOGLE_REDIRECT_URI), not the frontend. Ends by
-     * bouncing the now-authenticated browser on to the frontend, session
-     * cookie already set, rather than returning JSON — there's no XHR
-     * caller waiting on this response to parse.
-     */
-    public function handleGoogleCallback()
-    {
-        $frontendUrl = rtrim(config('app.frontend_url'), '/');
-
-        try {
-            $socialiteUser = Socialite::driver('google')->user();
-            $this->authService->loginOrRegisterViaSocialite('google', $socialiteUser);
-        } catch (\Throwable $exception) {
-            // Logs the exception class too, not just getMessage() — some
-            // exception types (Socialite's InvalidStateException among
-            // them) are thrown with a deliberately empty message, which
-            // made an earlier version of this log line useless for telling
-            // "session/state mismatch" apart from any other failure mode.
-            Log::warning('Google OAuth callback failed', [
-                'exception' => get_class($exception),
-                'message' => $exception->getMessage(),
-                'trace' => $exception->getTraceAsString(),
-            ]);
-
-            return redirect("{$frontendUrl}/login?error=google_failed");
+        if ($result['status'] === 'two_factor_required') {
+            return $this->ok(['twoFactorRequired' => true]);
         }
 
-        return redirect("{$frontendUrl}/account");
+        return $this->ok(new AuthUserResource($result['user']));
+    }
+
+    /**
+     * POST /auth/two-factor/challenge — completes a login that
+     * AuthService::attempt() left pending because the account has 2FA
+     * confirmed. Not behind auth:sanctum (the caller isn't logged in yet)
+     * — AuthService::challengeTwoFactor() authorizes purely from the
+     * short-lived session marker attempt() left, which throttle:two-factor
+     * also keys on.
+     */
+    public function twoFactorChallenge(TwoFactorChallengeRequest $request)
+    {
+        $user = $this->authService->challengeTwoFactor($request->validated()['code']);
+
+        return $this->ok(new AuthUserResource($user));
     }
 
     public function logout()

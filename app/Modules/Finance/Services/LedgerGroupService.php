@@ -19,13 +19,17 @@ class LedgerGroupService
      */
     public function create(array $data): LedgerGroup
     {
-        return LedgerGroup::create([
+        $group = LedgerGroup::create([
             'name' => $data['name'],
             'code' => $data['code'],
             'nature' => $data['nature'],
             'parent_id' => $data['parentId'] ?? null,
             'is_system' => false,
         ]);
+
+        activity('finance')->performedOn($group)->event('created')->log("Ledger group '{$group->name}' ({$group->code}) created");
+
+        return $group;
     }
 
     public function findOrFail(int $id): LedgerGroup
@@ -61,6 +65,8 @@ class LedgerGroupService
             'parent_id' => $parentId,
         ]);
 
+        activity('finance')->performedOn($group)->event('updated')->log("Ledger group '{$group->name}' ({$group->code}) updated");
+
         return $group;
     }
 
@@ -95,6 +101,11 @@ class LedgerGroupService
             ]);
         }
 
+        $name = $group->name;
+        $code = $group->code;
+
         $group->delete();
+
+        activity('finance')->event('deleted')->log("Ledger group '{$name}' ({$code}) deleted");
     }
 }

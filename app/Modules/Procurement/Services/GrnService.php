@@ -208,10 +208,18 @@ class GrnService
         return Grn::query()->with(['items', 'grnable'])->findOrFail($id);
     }
 
-    /** Purchase summary report — how many deliveries have been received, total. */
-    public function count(): int
+    /**
+     * Purchase summary report — how many deliveries have been received.
+     *
+     * @param  string|null  $from  inclusive 'YYYY-MM-DD'; omit for all-time
+     * @param  string|null  $to  inclusive 'YYYY-MM-DD'; omit for open-ended
+     */
+    public function count(?string $from = null, ?string $to = null): int
     {
-        return Grn::query()->count();
+        return Grn::query()
+            ->when($from !== null, fn ($query) => $query->whereDate('date_received', '>=', $from))
+            ->when($to !== null, fn ($query) => $query->whereDate('date_received', '<=', $to))
+            ->count();
     }
 
     /**

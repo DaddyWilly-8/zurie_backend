@@ -20,12 +20,13 @@ class RoleSeeder extends Seeder
             'super_admin' => 'Full system access',
             'admin' => 'Day-to-day store administration',
             'staff' => 'Limited operational access',
-            // No admin permissions granted — this role only identifies a
-            // storefront customer who has created an account (reuses the
-            // same users/auth/Sanctum stack rather than a parallel customer
-            // auth system). See Zurie_V2_Architecture_Design (2).md
-            // "Customer Architecture" revision / §36.
-            'customer' => 'Registered storefront customer account',
+            // No 'customer' role here anymore — the customer/staff split
+            // moved storefront logins to their own `customer_accounts`
+            // table and Auth guard (App\Modules\Auth\Models\CustomerAccount),
+            // which never goes through the RBAC system at all. A
+            // pre-split 'customer' Role row may still exist in an older
+            // database (this seeder never deletes rows), but it's inert —
+            // nothing assigns or checks it anymore.
         ];
     }
 

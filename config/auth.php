@@ -1,5 +1,6 @@
 <?php
 
+use App\Modules\Auth\Models\CustomerAccount;
 use App\Modules\Auth\Models\User;
 
 return [
@@ -47,6 +48,21 @@ return [
             'driver' => 'sanctum',
             'provider' => 'users',
         ],
+
+        // Customer/staff split — a completely independent login from
+        // 'web' even though both share the same session cookie (see
+        // CustomerAccount's docblock for why that's safe). Every
+        // customer-only controller resolves $request->user('customer')
+        // explicitly, and uses the plain `auth:customer` middleware
+        // (Laravel's core Authenticate, not Sanctum's) since the request
+        // is already made stateful by the api group's statefulApi() —
+        // Sanctum's own guard resolution is left untouched at ['web'] so
+        // every existing admin route's `auth:sanctum` behavior is
+        // unaffected by this addition.
+        'customer' => [
+            'driver' => 'session',
+            'provider' => 'customer_accounts',
+        ],
     ],
 
     /*
@@ -76,6 +92,11 @@ return [
         //     'driver' => 'database',
         //     'table' => 'users',
         // ],
+
+        'customer_accounts' => [
+            'driver' => 'eloquent',
+            'model' => CustomerAccount::class,
+        ],
     ],
 
     /*
@@ -101,6 +122,13 @@ return [
         'users' => [
             'provider' => 'users',
             'table' => env('AUTH_PASSWORD_RESET_TOKEN_TABLE', 'password_reset_tokens'),
+            'expire' => 60,
+            'throttle' => 60,
+        ],
+
+        'customer_accounts' => [
+            'provider' => 'customer_accounts',
+            'table' => 'customer_password_reset_tokens',
             'expire' => 60,
             'throttle' => 60,
         ],

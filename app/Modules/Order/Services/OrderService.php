@@ -7,6 +7,7 @@ use App\Modules\Currency\Services\CurrencyService;
 use App\Modules\Customer\Services\CustomerService;
 use App\Modules\Finance\Services\FinanceService;
 use App\Modules\Inventory\Services\InventoryService;
+use App\Modules\Auth\Services\CustomerAccountService;
 use App\Modules\Notification\Services\NotificationService;
 use App\Modules\Order\Exceptions\InvalidOrderTransitionException;
 use App\Modules\Order\Models\Order;
@@ -65,6 +66,7 @@ class OrderService
         private readonly CouponService $couponService,
         private readonly CurrencyService $currencyService,
         private readonly VatService $vatService,
+        private readonly CustomerAccountService $customerAccountService,
     ) {}
 
     /**
@@ -524,10 +526,16 @@ class OrderService
             ->all();
     }
 
-    public function sumBySource(): array
+    /**
+     * @param  string|null  $from  inclusive 'YYYY-MM-DD'; omit for all-time
+     * @param  string|null  $to  inclusive 'YYYY-MM-DD'; omit for open-ended
+     */
+    public function sumBySource(?string $from = null, ?string $to = null): array
     {
         return Order::query()
             ->where('status', '!=', 'cancelled')
+            ->when($from !== null, fn ($query) => $query->whereDate('created_at', '>=', $from))
+            ->when($to !== null, fn ($query) => $query->whereDate('created_at', '<=', $to))
             ->selectRaw('source, count(*) as count, sum(total_amount) as total')
             ->groupBy('source')
             ->get()
@@ -641,16 +649,19 @@ class OrderService
     }
 
     /**
-     * Only fires for a registered customer (a linked user_id) — a guest
-     * order has no account to notify. Best-effort: never blocks the
-     * status update itself if something's off with the customer lookup.
+     * Only fires for a registered customer with a linked CustomerAccount
+     * — a guest order, or one whose stakeholder never signed up, has no
+     * account to notify. Best-effort: never blocks the status update
+     * itself if something's off with the lookup.
      */
     private function notifyCustomerOfStatusChange(Order $order): void
     {
         $customer = $this->customerService->findForAdmin($order->customer_id);
-        if ($customer->user_id !== null) {
+        $account = $this->customerAccountService->findByStakeholderId($customer->id);
+
+        if ($account !== null) {
             $this->notificationService->notify(
-                $customer->user_id,
+                $account,
                 'order_status_changed',
                 "Your order {$order->order_number} status changed to '{$order->status}'.",
             );

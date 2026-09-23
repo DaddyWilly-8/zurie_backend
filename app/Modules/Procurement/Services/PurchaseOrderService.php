@@ -203,9 +203,15 @@ class PurchaseOrderService
      *
      * @return array<string, array{count: int, total: float}>
      */
-    public function totalsByStatus(): array
+    /**
+     * @param  string|null  $from  inclusive 'YYYY-MM-DD'; omit for all-time
+     * @param  string|null  $to  inclusive 'YYYY-MM-DD'; omit for open-ended
+     */
+    public function totalsByStatus(?string $from = null, ?string $to = null): array
     {
         return PurchaseOrder::query()
+            ->when($from !== null, fn ($query) => $query->whereDate('created_at', '>=', $from))
+            ->when($to !== null, fn ($query) => $query->whereDate('created_at', '<=', $to))
             ->selectRaw('status, count(*) as count, sum(total_amount) as total')
             ->groupBy('status')
             ->get()

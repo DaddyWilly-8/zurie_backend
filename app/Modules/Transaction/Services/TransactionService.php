@@ -89,6 +89,11 @@ class TransactionService
 
             $payment->update(['total_amount' => $total]);
 
+            activity('transaction')
+                ->performedOn($payment)
+                ->event('created')
+                ->log("Payment {$payment->payment_number} of {$total} recorded");
+
             return $payment->load(['items', 'purchaseOrders']);
         });
     }
@@ -126,6 +131,8 @@ class TransactionService
     /** Always deletes its journals first, unconditionally — see FinanceService::deleteEntry()'s docblock. */
     public function deletePayment(Payment $payment): void
     {
+        $paymentNumber = $payment->payment_number;
+
         DB::transaction(function () use ($payment) {
             $journalEntryIds = $payment->items->pluck('journal_entry_id')->all();
             $payment->delete();
@@ -133,6 +140,8 @@ class TransactionService
                 $this->financeService->deleteEntry(JournalEntry::findOrFail($journalEntryId));
             }
         });
+
+        activity('transaction')->event('deleted')->log("Payment {$paymentNumber} deleted, ledger effect reversed");
     }
 
     // ---------------------------------------------------------------
@@ -191,6 +200,11 @@ class TransactionService
             }
 
             $receipt->update(['total_amount' => $total]);
+
+            activity('transaction')
+                ->performedOn($receipt)
+                ->event('created')
+                ->log("Receipt {$receipt->receipt_number} of {$total} recorded");
 
             return $receipt->load('items', 'sales');
         });
@@ -263,6 +277,8 @@ class TransactionService
             throw ValidationException::withMessages(['receipt' => 'This receipt is linked to one or more sales and cannot be deleted.']);
         }
 
+        $receiptNumber = $receipt->receipt_number;
+
         DB::transaction(function () use ($receipt) {
             $journalEntryIds = $receipt->items->pluck('journal_entry_id')->all();
             $receipt->delete();
@@ -270,6 +286,8 @@ class TransactionService
                 $this->financeService->deleteEntry(JournalEntry::findOrFail($journalEntryId));
             }
         });
+
+        activity('transaction')->event('deleted')->log("Receipt {$receiptNumber} deleted, ledger effect reversed");
     }
 
     // ---------------------------------------------------------------
@@ -325,6 +343,11 @@ class TransactionService
 
             $voucher->update(['total_amount' => $total]);
 
+            activity('transaction')
+                ->performedOn($voucher)
+                ->event('created')
+                ->log("Journal Voucher {$voucher->voucher_number} of {$total} recorded");
+
             return $voucher->load('items');
         });
     }
@@ -341,6 +364,8 @@ class TransactionService
 
     public function deleteJournalVoucher(JournalVoucher $voucher): void
     {
+        $voucherNumber = $voucher->voucher_number;
+
         DB::transaction(function () use ($voucher) {
             $journalEntryIds = $voucher->items->pluck('journal_entry_id')->all();
             $voucher->delete();
@@ -348,6 +373,8 @@ class TransactionService
                 $this->financeService->deleteEntry(JournalEntry::findOrFail($journalEntryId));
             }
         });
+
+        activity('transaction')->event('deleted')->log("Journal Voucher {$voucherNumber} deleted, ledger effect reversed");
     }
 
     // ---------------------------------------------------------------
@@ -399,6 +426,11 @@ class TransactionService
 
             $transfer->update(['total_amount' => $total]);
 
+            activity('transaction')
+                ->performedOn($transfer)
+                ->event('created')
+                ->log("Fund Transfer {$transfer->transfer_number} of {$total} recorded");
+
             return $transfer->load('items');
         });
     }
@@ -415,6 +447,8 @@ class TransactionService
 
     public function deleteFundTransfer(FundTransfer $transfer): void
     {
+        $transferNumber = $transfer->transfer_number;
+
         DB::transaction(function () use ($transfer) {
             $journalEntryIds = $transfer->items->pluck('journal_entry_id')->all();
             $transfer->delete();
@@ -422,5 +456,7 @@ class TransactionService
                 $this->financeService->deleteEntry(JournalEntry::findOrFail($journalEntryId));
             }
         });
+
+        activity('transaction')->event('deleted')->log("Fund Transfer {$transferNumber} deleted, ledger effect reversed");
     }
 }

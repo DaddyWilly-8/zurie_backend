@@ -10,12 +10,21 @@ use App\Modules\Procurement\Services\PurchaseOrderService;
 use App\Modules\Product\Services\ProductService;
 use App\Modules\Stakeholder\Services\StakeholderService;
 use App\Modules\Transaction\Services\TransactionService;
+use Illuminate\Support\Facades\Cache;
 
 /**
  * Read-only aggregation over what other modules already record — no
  * manually-maintained totals table (Architecture Principle 4). Every
  * number here is derived live from Orders/the Finance ledger/Inventory,
  * so it can never drift from what those modules actually say happened.
+ *
+ * The heaviest reports (whole-table scans: trial balance, balance sheet,
+ * debtors, creditors) are cached for a short TTL rather than made
+ * real-time — a report that's a few seconds stale is never wrong in a way
+ * that matters to someone glancing at it, and a plain TTL needs no
+ * invalidation logic (nothing to keep in sync when an order/payment/GRN
+ * posts elsewhere). CACHE_STORE is `database` by default in this app
+ * (see .env.example) — swap to Redis before this matters at real scale.
  */
 class ReportService
 {
@@ -31,11 +40,13 @@ class ReportService
     ) {}
 
     /**
+     * @param  string|null  $from  inclusive 'YYYY-MM-DD'; omit for all-time
+     * @param  string|null  $to  inclusive 'YYYY-MM-DD'; omit for open-ended
      * @return array<string, array{count: int, total: float}>
      */
-    public function salesByChannel(): array
+    public function salesByChannel(?string $from = null, ?string $to = null): array
     {
-        return $this->orderService->sumBySource();
+        return $this->orderService->sumBySource($from, $to);
     }
 
     /**
@@ -57,21 +68,34 @@ class ReportService
     }
 
     /**
-     * Straight off the ledger — never separately computed. Matches
+     * All-time (no dates given): straight off the ledger's running total —
+     * never separately computed. With a date range given: computed from
+     * only the journal lines posted in that window (FinanceService::
+     * ledgerMovementInPeriod()/groupMovementInPeriod()), since
+     * current_balance itself is never date-partitioned. Matches
      * Zurie_V2_Architecture_Design (2).md §17's formula exactly:
      * Sales Revenue - COGS = Gross Profit; Gross Profit - Operating
      * Expenses = Net Profit. Operating expenses are summed across every
      * category ledger under Indirect Expenses, however many exist —
      * ReportService never needs to know their individual codes.
      *
+     * @param  string|null  $from  inclusive 'YYYY-MM-DD'; omit for all-time
+     * @param  string|null  $to  inclusive 'YYYY-MM-DD'; omit for open-ended
      * @return array{grossSales: float, salesDiscounts: float, netSales: float, costOfGoodsSold: float, grossProfit: float, operatingExpenses: float, netProfit: float}
      */
-    public function revenueSummary(): array
+    public function revenueSummary(?string $from = null, ?string $to = null): array
     {
-        $sales = (float) $this->financeService->systemLedger('SALES')->current_balance;
-        $discounts = (float) $this->financeService->systemLedger('SALES-DISC')->current_balance;
-        $cogs = (float) $this->financeService->systemLedger('COGS')->current_balance;
-        $operatingExpenses = $this->financeService->sumLedgersInGroup('IND-EXP');
+        if ($from === null && $to === null) {
+            $sales = (float) $this->financeService->systemLedger('SALES')->current_balance;
+            $discounts = (float) $this->financeService->systemLedger('SALES-DISC')->current_balance;
+            $cogs = (float) $this->financeService->systemLedger('COGS')->current_balance;
+            $operatingExpenses = $this->financeService->sumLedgersInGroup('IND-EXP');
+        } else {
+            $sales = $this->financeService->ledgerMovementInPeriod('SALES', $from, $to);
+            $discounts = $this->financeService->ledgerMovementInPeriod('SALES-DISC', $from, $to);
+            $cogs = $this->financeService->ledgerMovementInPeriod('COGS', $from, $to);
+            $operatingExpenses = $this->financeService->groupMovementInPeriod('IND-EXP', $from, $to);
+        }
 
         $netSales = $sales - $discounts;
         $grossProfit = $netSales - $cogs;
@@ -92,7 +116,7 @@ class ReportService
      */
     public function trialBalance(): array
     {
-        return $this->financeService->trialBalance();
+        return Cache::remember('report:trial-balance', 60, fn () => $this->financeService->trialBalance());
     }
 
     /**
@@ -100,7 +124,7 @@ class ReportService
      */
     public function balanceSheet(): array
     {
-        return $this->financeService->balanceSheet();
+        return Cache::remember('report:balance-sheet', 60, fn () => $this->financeService->balanceSheet());
     }
 
     /**
@@ -112,33 +136,35 @@ class ReportService
      */
     public function inventoryValue(?int $outletId = null): array
     {
-        $rows = $this->inventoryService->allStockRows($outletId);
-        $productIds = array_unique(array_column($rows, 'productId'));
-        $names = $this->productService->namesFor($productIds);
-        $prices = $this->productService->buyingPricesFor($productIds);
+        return Cache::remember("report:inventory-value:{$outletId}", 60, function () use ($outletId) {
+            $rows = $this->inventoryService->allStockRows($outletId);
+            $productIds = array_unique(array_column($rows, 'productId'));
+            $names = $this->productService->namesFor($productIds);
+            $prices = $this->productService->buyingPricesFor($productIds);
 
-        $totalValue = 0.0;
-        $lines = [];
-        foreach ($rows as $row) {
-            if ($row['quantity'] <= 0) {
-                continue;
+            $totalValue = 0.0;
+            $lines = [];
+            foreach ($rows as $row) {
+                if ($row['quantity'] <= 0) {
+                    continue;
+                }
+
+                $price = $prices[$row['productId']] ?? 0.0;
+                $value = $row['quantity'] * $price;
+                $totalValue += $value;
+
+                $lines[] = [
+                    'productId' => $row['productId'],
+                    'productName' => $names[$row['productId']] ?? 'Unknown product',
+                    'outletId' => $row['outletId'],
+                    'quantity' => $row['quantity'],
+                    'buyingPrice' => $price,
+                    'value' => $value,
+                ];
             }
 
-            $price = $prices[$row['productId']] ?? 0.0;
-            $value = $row['quantity'] * $price;
-            $totalValue += $value;
-
-            $lines[] = [
-                'productId' => $row['productId'],
-                'productName' => $names[$row['productId']] ?? 'Unknown product',
-                'outletId' => $row['outletId'],
-                'quantity' => $row['quantity'],
-                'buyingPrice' => $price,
-                'value' => $value,
-            ];
-        }
-
-        return ['totalValue' => $totalValue, 'lines' => $lines];
+            return ['totalValue' => $totalValue, 'lines' => $lines];
+        });
     }
 
     /**
@@ -152,25 +178,27 @@ class ReportService
      */
     public function debtors(): array
     {
-        $billed = $this->orderService->totalsByStakeholder();
-        $received = $this->transactionService->receiptsAppliedByStakeholder();
+        return Cache::remember('report:debtors', 60, function () {
+            $billed = $this->orderService->totalsByStakeholder();
+            $received = $this->transactionService->receiptsAppliedByStakeholder();
 
-        $rows = [];
-        foreach ($billed as $stakeholderId => $billedAmount) {
-            $outstanding = $billedAmount - ($received[$stakeholderId] ?? 0.0);
-            if ($outstanding <= 0.01) {
-                continue;
+            $rows = [];
+            foreach ($billed as $stakeholderId => $billedAmount) {
+                $outstanding = $billedAmount - ($received[$stakeholderId] ?? 0.0);
+                if ($outstanding <= 0.01) {
+                    continue;
+                }
+
+                $rows[] = [
+                    'stakeholderId' => $stakeholderId,
+                    'billed' => $billedAmount,
+                    'received' => $received[$stakeholderId] ?? 0.0,
+                    'outstanding' => $outstanding,
+                ];
             }
 
-            $rows[] = [
-                'stakeholderId' => $stakeholderId,
-                'billed' => $billedAmount,
-                'received' => $received[$stakeholderId] ?? 0.0,
-                'outstanding' => $outstanding,
-            ];
-        }
-
-        return $this->attachStakeholderNames($rows);
+            return $this->attachStakeholderNames($rows);
+        });
     }
 
     /**
@@ -182,18 +210,20 @@ class ReportService
      */
     public function creditors(): array
     {
-        $balances = $this->financeService->payableBalancesBySupplier();
+        return Cache::remember('report:creditors', 60, function () {
+            $balances = $this->financeService->payableBalancesBySupplier();
 
-        $rows = [];
-        foreach ($balances as $stakeholderId => $balance) {
-            if ($balance <= 0.01) {
-                continue;
+            $rows = [];
+            foreach ($balances as $stakeholderId => $balance) {
+                if ($balance <= 0.01) {
+                    continue;
+                }
+
+                $rows[] = ['stakeholderId' => $stakeholderId, 'outstanding' => $balance];
             }
 
-            $rows[] = ['stakeholderId' => $stakeholderId, 'outstanding' => $balance];
-        }
-
-        return $this->attachStakeholderNames($rows);
+            return $this->attachStakeholderNames($rows);
+        });
     }
 
     /**
@@ -216,11 +246,15 @@ class ReportService
     /**
      * @return array{purchaseOrders: array<string, array{count: int, total: float}>, deliveriesReceived: int}
      */
-    public function purchaseSummary(): array
+    /**
+     * @param  string|null  $from  inclusive 'YYYY-MM-DD'; omit for all-time
+     * @param  string|null  $to  inclusive 'YYYY-MM-DD'; omit for open-ended
+     */
+    public function purchaseSummary(?string $from = null, ?string $to = null): array
     {
         return [
-            'purchaseOrders' => $this->purchaseOrderService->totalsByStatus(),
-            'deliveriesReceived' => $this->grnService->count(),
+            'purchaseOrders' => $this->purchaseOrderService->totalsByStatus($from, $to),
+            'deliveriesReceived' => $this->grnService->count($from, $to),
         ];
     }
 

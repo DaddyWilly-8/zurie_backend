@@ -84,6 +84,14 @@ Rule of thumb: **routes.php → Controller method → Service method** — three
 
 ## 3. Auth & authorization
 
+**Two independent logins, one session cookie.** `Modules/Auth/Models/User` (`'web'` guard) is **staff-only** —
+RBAC, admin routes, created by an existing admin, never self-registered. `Modules/Auth/Models/CustomerAccount`
+(`'customer'` guard, table `customer_accounts`) is the **storefront login** — no roles/permissions, self-
+registers via `POST /customer/auth/register`. They share one session cookie but are fully independent logins
+within it (an admin browsing the storefront never appears as a logged-in customer, and vice versa) — see
+`docs/ARCHITECTURE_GUIDE.md` §9a for the full design. Customer-only routes use `auth:customer` middleware
+(Laravel's plain `Authenticate`, not Sanctum's), never `auth:sanctum`.
+
 ### Authentication — Sanctum cookie-based SPA (no tokens)
 
 ```

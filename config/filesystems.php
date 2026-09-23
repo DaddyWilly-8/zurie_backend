@@ -17,6 +17,21 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Media Disk
+    |--------------------------------------------------------------------------
+    |
+    | Where Modules\Media\Services\MediaService stores product/category
+    | uploads — 'public' (local disk) by default. Set MEDIA_DISK=s3 to move
+    | uploads to object storage with zero code change (the 's3' disk below
+    | already reads the AWS_* env vars) — see docs/ARCHITECTURE_GUIDE.md
+    | §14b "Infrastructure" for the full go-live checklist.
+    |
+    */
+
+    'media_disk' => env('MEDIA_DISK', 'public'),
+
+    /*
+    |--------------------------------------------------------------------------
     | Filesystem Disks
     |--------------------------------------------------------------------------
     |

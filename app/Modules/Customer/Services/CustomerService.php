@@ -3,8 +3,10 @@
 namespace App\Modules\Customer\Services;
 
 use App\Modules\Customer\Models\Customer;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Pagination\LengthAwarePaginator;
+use Illuminate\Support\Facades\DB;
 
 /**
  * Phase C (Stakeholder merge) — Customer now shares its physical table
@@ -64,7 +66,7 @@ class CustomerService
 
     public function paginateAdmin(int $page, int $pageSize): LengthAwarePaginator
     {
-        return Customer::query()
+        return $this->withAccountFlag(Customer::query())
             ->where('is_customer_role', true)
             ->orderByDesc('id')
             ->paginate($pageSize, ['*'], 'page', $page);
@@ -72,7 +74,31 @@ class CustomerService
 
     public function findForAdmin(int $id): Customer
     {
-        return Customer::query()->where('is_customer_role', true)->findOrFail($id);
+        return $this->withAccountFlag(Customer::query())->where('is_customer_role', true)->findOrFail($id);
+    }
+
+    /**
+     * Attaches `has_customer_account` (CustomerResource's `isRegistered`)
+     * via a raw subquery against `customer_accounts` by table name, not
+     * the Eloquent model — the same documented read-only cross-module
+     * pattern GrnService/DeliveryService already use, rather than a hard
+     * class dependency on Auth's CustomerAccount. `stakeholders.user_id`
+     * (the pre-customer/staff-split link) is deliberately NOT used for
+     * this anymore — see CustomerService::findByUserId()'s own
+     * @deprecated note for why it no longer reflects new signups.
+     */
+    private function withAccountFlag(Builder $query): Builder
+    {
+        // Raw EXISTS(...), not the addSelect(['alias' => Closure]) sugar
+        // (that syntax wraps a subquery Builder/Closure as a correlated
+        // SELECT, which can return SQL NULL on no match) — EXISTS()
+        // guarantees a plain 1 or 0 always, so CustomerResource's
+        // `?? fallback` can reliably tell "flag attached and false" apart
+        // from "flag never attached at all" (NULL would be ambiguous
+        // with the latter).
+        return $query->select('*')->addSelect(DB::raw(
+            'EXISTS (SELECT 1 FROM customer_accounts WHERE customer_accounts.stakeholder_id = stakeholders.id) as has_customer_account'
+        ));
     }
 
     /**
@@ -120,9 +146,29 @@ class CustomerService
         ]);
     }
 
+    /**
+     * @deprecated pre-customer/staff-split lookup — `stakeholders.user_id`
+     * still points at the now-staff-only `users` table and is no longer
+     * populated by new signups (see CustomerAccountService::register()).
+     * Self-service controllers should use findById() with a
+     * CustomerAccount's own `stakeholder_id` instead. Left in place only
+     * because a pre-split test row might still reference it locally —
+     * remove once nothing calls this.
+     */
     public function findByUserId(int $userId): ?Customer
     {
         return Customer::where('user_id', $userId)->where('is_customer_role', true)->first();
+    }
+
+    /**
+     * Self-service lookup by a CustomerAccount's own `stakeholder_id` —
+     * the customer/staff split's replacement for findByUserId(). Nullable:
+     * a CustomerAccount that hasn't completed registration/profile setup
+     * (e.g. a fresh Google sign-up) has no stakeholder_id yet.
+     */
+    public function findById(int $id): ?Customer
+    {
+        return Customer::where('id', $id)->where('is_customer_role', true)->first();
     }
 
     /**
