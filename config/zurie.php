@@ -16,6 +16,9 @@ return [
     'default_vat_percentage' => (float) env('ZURIE_DEFAULT_VAT_PERCENTAGE', 18.0),
 
     /*
+     * Both values here are only DEFAULTS: once someone saves Admin >
+     * Settings > Tax, SettingsService::getTax() uses that instead.
+     *
      * Whether the prices entered on products already include VAT.
      *   true  — a 45,000 item costs the customer 45,000; the sale is split
      *           into net Sales and VAT Output inside that price.

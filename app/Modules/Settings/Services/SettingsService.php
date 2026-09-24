@@ -161,6 +161,41 @@ class SettingsService
      *
      * @return array<string, array<string, mixed>>
      */
+    /**
+     * The business's VAT setup, editable in Admin > Settings > Tax. Until
+     * it's saved there, falls back to config/zurie.php (the
+     * ZURIE_DEFAULT_VAT_PERCENTAGE / ZURIE_PRICES_INCLUDE_VAT env values).
+     * Read by Order (checkout/POS), Procurement and Purchase through this
+     * Service, never from the settings table directly.
+     *
+     * @return array{vatPercentage: float, pricesIncludeVat: bool}
+     */
+    public function getTax(): array
+    {
+        $saved = $this->get('tax');
+
+        return [
+            'vatPercentage' => (float) ($saved['vatPercentage'] ?? config('zurie.default_vat_percentage')),
+            'pricesIncludeVat' => (bool) ($saved['pricesIncludeVat'] ?? config('zurie.prices_include_vat')),
+        ];
+    }
+
+    /**
+     * @param  array{vatPercentage: float|int|string, pricesIncludeVat: bool|int|string}  $data
+     * @return array{vatPercentage: float, pricesIncludeVat: bool}
+     */
+    public function updateTax(array $data): array
+    {
+        // Logged by the Setting model itself ("Tax settings updated"), like
+        // every other settings category.
+        $this->put('tax', [
+            'vatPercentage' => (float) $data['vatPercentage'],
+            'pricesIncludeVat' => (bool) $data['pricesIncludeVat'],
+        ]);
+
+        return $this->getTax();
+    }
+
     public function overview(): array
     {
         return [
@@ -168,12 +203,9 @@ class SettingsService
             'contact' => $this->getContact(),
             'homepage' => $this->getHomepage(),
             'policies' => $this->getPolicies(),
-            // Read-only, from config/zurie.php — lets the storefront cart and
-            // POS show the same VAT line checkout will actually charge.
-            'tax' => [
-                'vatPercentage' => (float) config('zurie.default_vat_percentage'),
-                'pricesIncludeVat' => (bool) config('zurie.prices_include_vat'),
-            ],
+            // Lets the storefront cart and POS show the same VAT line
+            // checkout will actually charge.
+            'tax' => $this->getTax(),
         ];
     }
 }
