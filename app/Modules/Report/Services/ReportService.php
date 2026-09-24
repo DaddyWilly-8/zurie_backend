@@ -232,12 +232,14 @@ class ReportService
      */
     private function attachStakeholderNames(array $rows): array
     {
-        return array_map(function (array $row) {
-            try {
-                $row['name'] = $this->stakeholderService->findOrFail($row['stakeholderId'])->name;
-            } catch (\Throwable) {
-                $row['name'] = 'Unknown stakeholder';
-            }
+        // One batched query for the whole report instead of one findOrFail()
+        // per row — debtors()/creditors() were previously N+1 on the
+        // stakeholder table (a report listing 50 debtors ran 50 separate
+        // lookups just for their names).
+        $names = $this->stakeholderService->namesFor(array_column($rows, 'stakeholderId'));
+
+        return array_map(function (array $row) use ($names) {
+            $row['name'] = $names[$row['stakeholderId']] ?? 'Unknown stakeholder';
 
             return $row;
         }, $rows);

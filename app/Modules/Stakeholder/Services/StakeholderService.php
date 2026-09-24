@@ -27,4 +27,24 @@ class StakeholderService
     {
         return Stakeholder::query()->findOrFail($id);
     }
+
+    /**
+     * Batched id => name, for callers building a report row per
+     * stakeholder (ReportService::debtors()/creditors()) that would
+     * otherwise call findOrFail() once per row — one query for the whole
+     * list instead of one per stakeholder. A missing id just isn't in the
+     * returned array; the caller falls back to "Unknown stakeholder", same
+     * as ProductService::namesFor()'s convention for a deleted product.
+     *
+     * @param  array<int, int>  $ids
+     * @return array<int, string> stakeholderId => name
+     */
+    public function namesFor(array $ids): array
+    {
+        if (empty($ids)) {
+            return [];
+        }
+
+        return Stakeholder::query()->whereIn('id', $ids)->pluck('name', 'id')->all();
+    }
 }
