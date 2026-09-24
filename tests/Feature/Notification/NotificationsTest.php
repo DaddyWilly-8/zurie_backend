@@ -162,4 +162,16 @@ class NotificationsTest extends TestCase
         $this->actingAs($account, 'customer')->getJson('/api/v1/account/orders')
             ->assertOk()->assertJsonPath('data.0.orderNumber', $number);
     }
+
+    public function test_checkout_rejects_oversized_orders(): void
+    {
+        $lines = array_fill(0, 51, ['productId' => $this->productId, 'quantity' => 1]);
+        $this->postJson('/api/v1/orders', ['customerName' => 'A', 'customerPhone' => '0711111111', 'items' => $lines])
+            ->assertStatus(422)->assertJsonValidationErrors(['items']);
+
+        $this->postJson('/api/v1/orders', ['customerName' => 'A', 'customerPhone' => '0711111111', 'items' => [['productId' => $this->productId, 'quantity' => 1001]]])
+            ->assertStatus(422)->assertJsonValidationErrors(['items.0.quantity']);
+
+        $this->assertSame(0, AppNotification::count());
+    }
 }

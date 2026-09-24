@@ -52,7 +52,7 @@ class ReviewController extends Controller
     public function adminIndex(Request $request)
     {
         $page = max(1, (int) $request->query('page', 1));
-        $pageSize = max(1, (int) $request->query('pageSize', 20));
+        $pageSize = $this->pageSize($request);
         $filters = $request->only(['status']);
 
         $reviews = $this->reviewService->paginateAdmin($filters, $page, $pageSize);

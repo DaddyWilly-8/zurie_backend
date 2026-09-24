@@ -55,7 +55,7 @@ class NotificationController extends Controller
     private function listFor(Request $request, Model $notifiable)
     {
         $page = max(1, (int) $request->query('page', 1));
-        $pageSize = max(1, (int) $request->query('pageSize', 20));
+        $pageSize = $this->pageSize($request);
 
         $notifications = $this->notificationService->paginateFor($notifiable, $page, $pageSize);
 

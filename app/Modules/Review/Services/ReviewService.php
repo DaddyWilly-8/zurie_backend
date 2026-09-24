@@ -52,13 +52,17 @@ class ReviewService
      */
     public function submit(int $customerId, array $data): ProductReview
     {
-        $review = ProductReview::create([
-            'product_id' => $data['productId'],
-            'customer_id' => $customerId,
-            'rating' => $data['rating'],
-            'comment' => $data['comment'] ?? null,
-            'status' => 'pending',
-        ]);
+        // One review per customer per product: submitting again edits it
+        // and sends it back for approval, instead of piling up duplicates
+        // (and a staff notification for each one).
+        $review = ProductReview::updateOrCreate(
+            ['product_id' => $data['productId'], 'customer_id' => $customerId],
+            ['rating' => $data['rating'], 'comment' => $data['comment'] ?? null, 'status' => 'pending'],
+        );
+
+        if (! $review->wasRecentlyCreated && ! $review->wasChanged()) {
+            return $review;
+        }
 
         $this->notificationService->notifyStaff(
             'review_manage',

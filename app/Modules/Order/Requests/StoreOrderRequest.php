@@ -27,9 +27,11 @@ class StoreOrderRequest extends FormRequest
             'customerPhone' => ['required', 'string', 'max:50'],
             'whatsappNumber' => ['nullable', 'string', 'max:50'],
             'customerEmail' => ['nullable', 'email', 'max:255'],
-            'items' => ['required', 'array', 'min:1'],
+            // Public and unauthenticated: bounded so one request can't hold
+            // stock/ledger row locks for thousands of lines.
+            'items' => ['required', 'array', 'min:1', 'max:50'],
             'items.*.productId' => ['required', 'integer'],
-            'items.*.quantity' => ['required', 'integer', 'min:1'],
+            'items.*.quantity' => ['required', 'integer', 'min:1', 'max:1000'],
             'couponCode' => ['nullable', 'string', 'max:50'],
             'currencyId' => ['nullable', 'integer', 'exists:currencies,id'],
         ];

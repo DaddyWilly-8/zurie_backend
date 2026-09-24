@@ -332,7 +332,7 @@ class OrderService
             $discount = 0.0;
             $coupon = null;
             if ($couponCode !== null) {
-                $coupon = $this->couponService->validate($couponCode, $totalRevenue);
+                $coupon = $this->couponService->validate($couponCode, $totalRevenue, forUpdate: true);
                 $discount = $this->couponService->calculateDiscount($coupon, $totalRevenue);
             }
 
@@ -608,10 +608,23 @@ class OrderService
      * arbitrary id from the request, only ever the one resolved from the
      * authenticated session (see AccountController).
      */
-    public function paginateForCustomer(int $customerId, int $page, int $pageSize): LengthAwarePaginator
+    /**
+     * A signed-in customer's order history. The customer record is shared
+     * by phone number with any earlier guest checkouts, so orders placed
+     * before the account existed are shown only when they carry the
+     * account's own email: knowing someone's phone number must not be
+     * enough to read their past orders.
+     */
+    public function paginateForCustomer(int $customerId, int $page, int $pageSize, ?\DateTimeInterface $accountCreatedAt = null, ?string $accountEmail = null): LengthAwarePaginator
     {
         return Order::query()
             ->where('customer_id', $customerId)
+            ->when($accountCreatedAt !== null, fn ($query) => $query->where(function ($visible) use ($accountCreatedAt, $accountEmail) {
+                $visible->where('created_at', '>=', $accountCreatedAt);
+                if ($accountEmail !== null && $accountEmail !== '') {
+                    $visible->orWhereRaw('LOWER(customer_email) = ?', [mb_strtolower($accountEmail)]);
+                }
+            }))
             ->with('items')
             ->orderByDesc('id')
             ->paginate($pageSize, ['*'], 'page', $page);

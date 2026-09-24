@@ -34,7 +34,10 @@ class MediaService
 
     public function store(UploadedFile $file, string $folder, ?int $uploadedBy): Media
     {
-        $filename = Str::uuid()->toString().'.'.$file->getClientOriginalExtension();
+        // Extension detected from the file's content, never the uploader's
+        // filename (validation already rejects non-image names; this is the
+        // second lock on the door).
+        $filename = Str::uuid()->toString().'.'.($file->extension() ?: 'bin');
 
         $path = $file->storeAs($folder, $filename, $this->disk());
 
