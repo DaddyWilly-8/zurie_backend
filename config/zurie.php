@@ -14,4 +14,16 @@ return [
      * infrastructure exists yet.
      */
     'default_vat_percentage' => (float) env('ZURIE_DEFAULT_VAT_PERCENTAGE', 18.0),
+
+    /*
+     * Whether the prices entered on products already include VAT.
+     *   true  — a 45,000 item costs the customer 45,000; the sale is split
+     *           into net Sales and VAT Output inside that price.
+     *   false — VAT is added on top: the same item costs 45,000 + 18%.
+     * Either way VAT is computed on the price after any coupon discount,
+     * and products marked vat_exempted carry none. Each order stores the
+     * mode it was sold under (orders.prices_include_vat) so a later change
+     * here never alters how an existing order is reversed.
+     */
+    'prices_include_vat' => (bool) env('ZURIE_PRICES_INCLUDE_VAT', true),
 ];

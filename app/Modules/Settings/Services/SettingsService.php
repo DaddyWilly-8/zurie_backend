@@ -168,6 +168,12 @@ class SettingsService
             'contact' => $this->getContact(),
             'homepage' => $this->getHomepage(),
             'policies' => $this->getPolicies(),
+            // Read-only, from config/zurie.php — lets the storefront cart and
+            // POS show the same VAT line checkout will actually charge.
+            'tax' => [
+                'vatPercentage' => (float) config('zurie.default_vat_percentage'),
+                'pricesIncludeVat' => (bool) config('zurie.prices_include_vat'),
+            ],
         ];
     }
 }

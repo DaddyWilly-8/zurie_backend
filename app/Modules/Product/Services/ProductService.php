@@ -117,7 +117,7 @@ class ProductService
     public function findActiveForOrder(int $id): Product
     {
         return Product::query()
-            ->select(['id', 'name', 'price', 'sale_price', 'buying_price', 'category_id'])
+            ->select(['id', 'name', 'price', 'sale_price', 'buying_price', 'category_id', 'vat_exempted'])
             ->where('status', 'published')
             ->findOrFail($id);
     }

@@ -36,9 +36,12 @@ class RoleSeeder extends Seeder
             Role::firstOrCreate(['name' => $name], ['description' => $description]);
         }
 
-        // "admin" holds every permission for now — split this out per-role
-        // once staff/super_admin need a narrower or wider set than admin.
-        $admin = Role::where('name', 'admin')->firstOrFail();
-        $admin->permissions()->sync(Permission::pluck('id'));
+        // "super_admin" ("Full system access") and "admin" both hold every
+        // permission for now — split this out per-role once they need
+        // different sets. Without super_admin here, a fresh install left
+        // super_admin users able to log in but 403'd on every admin page.
+        foreach (['super_admin', 'admin'] as $roleName) {
+            Role::where('name', $roleName)->firstOrFail()->permissions()->sync(Permission::pluck('id'));
+        }
     }
 }

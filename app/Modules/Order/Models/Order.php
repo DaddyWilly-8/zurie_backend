@@ -20,6 +20,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
     'total_amount',
     'discount_amount',
     'vat_amount',
+    'prices_include_vat',
     'coupon_id',
     'currency_id',
     'exchange_rate',
@@ -33,6 +34,7 @@ class Order extends Model
             'total_amount' => 'decimal:2',
             'discount_amount' => 'decimal:2',
             'vat_amount' => 'decimal:2',
+            'prices_include_vat' => 'boolean',
             'exchange_rate' => 'double',
         ];
     }
