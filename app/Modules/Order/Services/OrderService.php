@@ -17,6 +17,7 @@ use App\Modules\Outlet\Services\OutletService;
 use App\Modules\PriceList\Services\PriceListService;
 use App\Modules\Product\Services\CategoryService;
 use App\Modules\Product\Services\ProductService;
+use App\Modules\Settings\Services\SettingsService;
 use App\Modules\Vat\Services\VatService;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\Eloquent\Collection;
@@ -70,6 +71,7 @@ class OrderService
         private readonly VatService $vatService,
         private readonly CustomerAccountService $customerAccountService,
         private readonly CategoryService $categoryService,
+        private readonly SettingsService $settingsService,
     ) {}
 
     /**
@@ -246,6 +248,8 @@ class OrderService
             $totalRevenue = 0.0;
             $totalCost = 0.0;
             $lines = [];
+            // Admin > Settings > Tax (falls back to config/zurie.php).
+            $tax = $this->settingsService->getTax();
 
             // Lock every needed stock row up front in a fixed order, so two
             // carts with the same products in opposite order can't deadlock.
@@ -295,7 +299,7 @@ class OrderService
                     'unitSellingPrice' => $unitSellingPrice,
                     'lineTotal' => $lineTotal,
                     'lineCost' => $lineCost,
-                    'vatPercentage' => $product->vat_exempted ? 0.0 : (float) config('zurie.default_vat_percentage'),
+                    'vatPercentage' => $product->vat_exempted ? 0.0 : $tax['vatPercentage'],
                 ];
             }
 
@@ -312,7 +316,7 @@ class OrderService
                 $discount = $this->couponService->calculateDiscount($coupon, $totalRevenue);
             }
 
-            $pricesIncludeVat = (bool) config('zurie.prices_include_vat');
+            $pricesIncludeVat = $tax['pricesIncludeVat'];
             $lineVats = $this->vatPerLine($lines, $discount, $pricesIncludeVat);
             $totalVat = round(array_sum($lineVats), 2);
 

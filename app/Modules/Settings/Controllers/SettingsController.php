@@ -7,6 +7,7 @@ use App\Modules\Settings\Requests\UpdateBrandSettingsRequest;
 use App\Modules\Settings\Requests\UpdateContactSettingsRequest;
 use App\Modules\Settings\Requests\UpdateHomepageSettingsRequest;
 use App\Modules\Settings\Requests\UpdatePolicySettingsRequest;
+use App\Modules\Settings\Requests\UpdateTaxSettingsRequest;
 use App\Modules\Settings\Requests\UploadBrandLogoRequest;
 use App\Modules\Settings\Requests\UploadHomepageHeroImageRequest;
 use App\Modules\Settings\Services\SettingsService;
@@ -66,6 +67,16 @@ class SettingsController extends Controller
     public function uploadHomepageHeroImage(UploadHomepageHeroImageRequest $request)
     {
         return $this->ok($this->settingsService->uploadHomepageHeroImage($request->file('image'), $request->user()?->id));
+    }
+
+    public function showTax()
+    {
+        return $this->ok($this->settingsService->getTax());
+    }
+
+    public function updateTax(UpdateTaxSettingsRequest $request)
+    {
+        return $this->ok($this->settingsService->updateTax($request->validated()));
     }
 
     public function showPolicies()

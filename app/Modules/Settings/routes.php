@@ -21,4 +21,7 @@ Route::middleware('auth:sanctum')->group(function (): void {
 
     Route::get('admin/settings/policies', [SettingsController::class, 'showPolicies'])->middleware('permission:settings_manage');
     Route::put('admin/settings/policies', [SettingsController::class, 'updatePolicies'])->middleware('permission:settings_manage');
+
+    Route::get('admin/settings/tax', [SettingsController::class, 'showTax'])->middleware('permission:settings_manage');
+    Route::put('admin/settings/tax', [SettingsController::class, 'updateTax'])->middleware('permission:settings_manage');
 });

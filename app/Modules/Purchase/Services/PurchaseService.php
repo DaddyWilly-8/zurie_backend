@@ -7,6 +7,7 @@ use App\Modules\Finance\Services\FinanceService;
 use App\Modules\Inventory\Services\InventoryService;
 use App\Modules\Product\Services\ProductService;
 use App\Modules\Purchase\Models\Purchase;
+use App\Modules\Settings\Services\SettingsService;
 use App\Modules\Supplier\Models\Supplier;
 use App\Modules\Supplier\Services\SupplierService;
 use App\Modules\Vat\Services\VatService;
@@ -22,6 +23,7 @@ class PurchaseService
         private readonly CurrencyService $currencyService,
         private readonly ProductService $productService,
         private readonly VatService $vatService,
+        private readonly SettingsService $settingsService,
     ) {}
 
     /**
@@ -31,7 +33,7 @@ class PurchaseService
      */
     private static function generatePurchaseNumber(int $id): string
     {
-        return 'PUR-' . str_pad((string) $id, 6, '0', STR_PAD_LEFT);
+        return 'PUR-'.str_pad((string) $id, 6, '0', STR_PAD_LEFT);
     }
 
     /**
@@ -82,6 +84,8 @@ class PurchaseService
 
             $this->inventoryService->lockStockRows(array_column($data['items'], 'productId'));
 
+            $vatRate = $this->settingsService->getTax()['vatPercentage'];
+
             foreach ($data['items'] as $line) {
                 $lineTotal = $line['quantity'] * $line['costPrice'];
                 $totalAmount += $lineTotal;
@@ -90,7 +94,7 @@ class PurchaseService
                 // Order's checkout, computed server-side from the product's
                 // own record rather than trusted from the request.
                 $product = $this->productService->findForAdmin($line['productId']);
-                $vatPercentage = $product->vat_exempted ? 0.0 : (float) config('zurie.default_vat_percentage');
+                $vatPercentage = $product->vat_exempted ? 0.0 : $vatRate;
                 $vatAmount = $lineTotal * $vatPercentage / 100;
                 $totalVat += $vatAmount;
 

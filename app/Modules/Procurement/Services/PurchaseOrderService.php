@@ -6,8 +6,10 @@ use App\Modules\Currency\Services\CurrencyService;
 use App\Modules\Finance\Services\FinanceService;
 use App\Modules\Procurement\Models\PurchaseOrder;
 use App\Modules\Product\Services\ProductService;
+use App\Modules\Settings\Services\SettingsService;
 use App\Modules\Supplier\Models\Supplier;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
+use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
@@ -20,6 +22,7 @@ class PurchaseOrderService
         private readonly CurrencyService $currencyService,
         private readonly FinanceService $financeService,
         private readonly ProductService $productService,
+        private readonly SettingsService $settingsService,
     ) {}
 
     /**
@@ -36,12 +39,12 @@ class PurchaseOrderService
             return 0.0;
         }
 
-        return $requested ?? (float) config('zurie.default_vat_percentage');
+        return $requested ?? $this->settingsService->getTax()['vatPercentage'];
     }
 
     private static function generatePoNumber(int $id): string
     {
-        return 'PO-' . str_pad((string) $id, 6, '0', STR_PAD_LEFT);
+        return 'PO-'.str_pad((string) $id, 6, '0', STR_PAD_LEFT);
     }
 
     /**
@@ -337,7 +340,7 @@ class PurchaseOrderService
 
         try {
             $this->financeService->ledgerFor($supplier);
-        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException) {
+        } catch (ModelNotFoundException) {
             $sundryCreditors = $this->financeService->ledgerGroupByCode('CRED');
             $this->financeService->findOrCreateLedgerFor($supplier, $sundryCreditors, $supplier->name);
         }
