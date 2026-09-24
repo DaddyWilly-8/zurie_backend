@@ -235,7 +235,7 @@ class InventoryService
      * rather than leaving a gap.
      *
      * @param  array<int, int>  $productIds
-     * @return array<int, string>  productId => stockStatus
+     * @return array<int, string> productId => stockStatus
      */
     public function getStatusForProducts(array $productIds, ?int $outletId = null): array
     {
@@ -288,8 +288,19 @@ class InventoryService
      * re-selects it with lockForUpdate() to actually hold the row for
      * the read-check-write below.
      *
-     * @throws InsufficientStockException  if the requested quantity exceeds what's currently on hand at that outlet
+     * @throws InsufficientStockException if the requested quantity exceeds what's currently on hand at that outlet
      */
+    /**
+     * Current quantity of one product at one outlet (default: online).
+     */
+    public function quantityAt(int $productId, ?int $outletId = null): int
+    {
+        return (int) Inventory::query()
+            ->where('product_id', $productId)
+            ->where('sales_outlet_id', $this->resolveOutletId($outletId))
+            ->value('quantity');
+    }
+
     public function decrementForOrder(
         int $productId,
         int $quantity,
@@ -534,7 +545,7 @@ class InventoryService
      * store instead.
      *
      * @param  array<int, int>  $productIds
-     * @return array<int, int>  productId => quantity
+     * @return array<int, int> productId => quantity
      */
     public function getQuantitiesForProducts(array $productIds, ?int $outletId = null): array
     {

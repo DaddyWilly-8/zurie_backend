@@ -6,10 +6,14 @@ use App\Modules\Finance\Models\CostCenter;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Spatie\Activitylog\Models\Concerns\LogsActivity;
+use Spatie\Activitylog\Support\LogOptions;
 
 #[Fillable(['name', 'type', 'address', 'cost_center_id', 'is_active'])]
 class SalesOutlet extends Model
 {
+    use LogsActivity;
+
     protected function casts(): array
     {
         return [
@@ -25,5 +29,19 @@ class SalesOutlet extends Model
     public function costCenter(): BelongsTo
     {
         return $this->belongsTo(CostCenter::class, 'cost_center_id');
+    }
+
+    /**
+     * Audit trail (Admin > Activity): who created/changed/deleted this
+     * and which fields changed.
+     */
+    public function getActivitylogOptions(): LogOptions
+    {
+        return LogOptions::defaults()
+            ->useLogName('outlet')
+            ->logOnly(['name', 'type', 'address', 'cost_center_id', 'is_active'])
+            ->logOnlyDirty()
+            ->dontLogEmptyChanges()
+            ->setDescriptionForEvent(fn (string $event): string => "Outlet '{$this->name}' {$event}");
     }
 }

@@ -3,10 +3,13 @@
 namespace App\Modules\Enquiry\Services;
 
 use App\Modules\Enquiry\Models\Enquiry;
+use App\Modules\Notification\Services\NotificationService;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 
 class EnquiryService
 {
+    public function __construct(private readonly NotificationService $notificationService) {}
+
     /**
      * POST /contact — public, no auth. Always created as `status: new`
      * (the model's own column default) — there is no reply/thread
@@ -18,13 +21,21 @@ class EnquiryService
      */
     public function create(array $data): Enquiry
     {
-        return Enquiry::create([
+        $enquiry = Enquiry::create([
             'name' => $data['name'],
             'email' => $data['email'],
             'message' => $data['message'],
             'phone' => $data['phone'] ?? null,
             'subject' => $data['subject'] ?? null,
         ]);
+
+        $this->notificationService->notifyStaff(
+            'enquiry_view',
+            'new_enquiry',
+            "New enquiry from {$enquiry->name}".($enquiry->subject ? ": {$enquiry->subject}" : '.'),
+        );
+
+        return $enquiry;
     }
 
     /**

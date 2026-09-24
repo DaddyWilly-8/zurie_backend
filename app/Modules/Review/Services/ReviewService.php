@@ -2,12 +2,15 @@
 
 namespace App\Modules\Review\Services;
 
+use App\Modules\Notification\Services\NotificationService;
 use App\Modules\Review\Models\ProductReview;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\Eloquent\Collection;
 
 class ReviewService
 {
+    public function __construct(private readonly NotificationService $notificationService) {}
+
     /**
      * Public product-page reviews — approved only. A pending/rejected
      * review is invisible to everyone except the admin moderation queue.
@@ -25,13 +28,21 @@ class ReviewService
      */
     public function submit(int $customerId, array $data): ProductReview
     {
-        return ProductReview::create([
+        $review = ProductReview::create([
             'product_id' => $data['productId'],
             'customer_id' => $customerId,
             'rating' => $data['rating'],
             'comment' => $data['comment'] ?? null,
             'status' => 'pending',
         ]);
+
+        $this->notificationService->notifyStaff(
+            'review_manage',
+            'review_pending',
+            "New {$review->rating}-star review awaiting approval (product #{$review->product_id}).",
+        );
+
+        return $review;
     }
 
     /**
