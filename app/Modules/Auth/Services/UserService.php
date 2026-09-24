@@ -4,12 +4,26 @@ namespace App\Modules\Auth\Services;
 
 use App\Modules\Auth\Models\User;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Validation\ValidationException;
 
 class UserService
 {
+    /**
+     * Every staff user whose roles grant $permissionKey — who gets a staff
+     * notification about something they're allowed to act on.
+     *
+     * @return Collection<int, User>
+     */
+    public function withPermission(string $permissionKey): Collection
+    {
+        return User::query()
+            ->whereHas('roles.permissions', fn ($query) => $query->where('key', $permissionKey))
+            ->get();
+    }
+
     /**
      * @param  array<string, mixed>  $data
      */

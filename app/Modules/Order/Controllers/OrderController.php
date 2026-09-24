@@ -27,7 +27,12 @@ class OrderController extends Controller
      */
     public function store(StoreOrderRequest $request)
     {
-        $order = $this->orderService->checkout($request->validated());
+        // A signed-in storefront customer's order always lands on their own
+        // account, whatever phone number they type at checkout.
+        $order = $this->orderService->checkout(
+            $request->validated(),
+            $request->user('customer')?->stakeholder_id,
+        );
 
         return $this->created(new OrderResource($order));
     }

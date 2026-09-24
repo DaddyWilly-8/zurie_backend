@@ -7,16 +7,14 @@ use App\Modules\Notification\Models\AppNotification;
 use App\Modules\Notification\Resources\NotificationResource;
 use App\Modules\Notification\Services\NotificationService;
 use App\Support\Http\ApiResponse;
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Http\Request;
 
 /**
- * Self-service, customer-only — always scoped to $request->user('customer'),
- * never an id from the request (same rule as AccountController). Only
- * customers have a notification-reading UI today; if a future staff
- * notification feed is built, that's a separate controller resolving
- * $request->user() ('web' guard) instead, not a shared one — see
- * NotificationService's own polymorphic design for why the data model
- * already supports both.
+ * One controller for both audiences: storefront customers (the 'customer'
+ * guard, /account/notifications) and staff (the 'web' guard,
+ * /admin/notifications). Every action only ever touches the notifications
+ * of whoever is logged in on that guard.
  */
 class NotificationController extends Controller
 {
@@ -26,11 +24,40 @@ class NotificationController extends Controller
 
     public function index(Request $request)
     {
-        $customer = $request->user('customer');
+        return $this->listFor($request, $request->user('customer'));
+    }
+
+    public function markRead(Request $request, AppNotification $notification)
+    {
+        return $this->markReadFor($request->user('customer'), $notification);
+    }
+
+    public function markAllRead(Request $request)
+    {
+        return $this->ok(['updated' => $this->notificationService->markAllReadFor($request->user('customer'))]);
+    }
+
+    public function staffIndex(Request $request)
+    {
+        return $this->listFor($request, $request->user());
+    }
+
+    public function staffMarkRead(Request $request, AppNotification $notification)
+    {
+        return $this->markReadFor($request->user(), $notification);
+    }
+
+    public function staffMarkAllRead(Request $request)
+    {
+        return $this->ok(['updated' => $this->notificationService->markAllReadFor($request->user())]);
+    }
+
+    private function listFor(Request $request, Model $notifiable)
+    {
         $page = max(1, (int) $request->query('page', 1));
         $pageSize = max(1, (int) $request->query('pageSize', 20));
 
-        $notifications = $this->notificationService->paginateFor($customer, $page, $pageSize);
+        $notifications = $this->notificationService->paginateFor($notifiable, $page, $pageSize);
 
         return $this->paginated(
             NotificationResource::collection($notifications->items()),
@@ -38,19 +65,14 @@ class NotificationController extends Controller
                 'count' => $notifications->total(),
                 'page' => $notifications->currentPage(),
                 'pageSize' => $notifications->perPage(),
-                'unread' => $this->notificationService->unreadCountFor($customer),
+                'unread' => $this->notificationService->unreadCountFor($notifiable),
             ]
         );
     }
 
-    /**
-     * Ownership check, not a permission gate — a notification belongs to
-     * exactly one notifiable, and route-model binding alone doesn't scope
-     * by the authenticated session, so this is enforced explicitly here.
-     */
-    public function markRead(Request $request, AppNotification $notification)
+    private function markReadFor(Model $notifiable, AppNotification $notification)
     {
-        if (! $this->notificationService->belongsTo($notification, $request->user('customer'))) {
+        if (! $this->notificationService->belongsTo($notification, $notifiable)) {
             return $this->fail('This action is unauthorized.', 403);
         }
 

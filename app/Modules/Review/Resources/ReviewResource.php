@@ -19,6 +19,11 @@ class ReviewResource extends JsonResource
             'rating' => $this->rating,
             'comment' => $this->comment,
             'status' => $this->status,
+            'productName' => $this->product_name,
+            // Public product pages show only the reviewer's first name;
+            // the admin moderation list gets the full name.
+            'reviewerName' => $this->customer_name !== null ? strtok((string) $this->customer_name, ' ') : null,
+            'customerName' => $request->is('api/v1/admin/*') ? $this->customer_name : null,
             'createdAt' => $this->created_at?->toISOString(),
         ];
     }

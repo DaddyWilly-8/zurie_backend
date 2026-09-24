@@ -104,12 +104,15 @@ class OrderService
      * lines in the same request. No partial orders, no phantom decrements.
      *
      * @param  array<string, mixed>  $data  validated StoreOrderRequest payload
+     * @param  int|null  $accountCustomerId  the signed-in storefront customer's
+     *                                       own customer record, if any — the order is filed under it rather
+     *                                       than matched by the typed phone number
      */
-    public function checkout(array $data): Order
+    public function checkout(array $data, ?int $accountCustomerId = null): Order
     {
         $outlet = $this->outletService->defaultOnlineOutlet();
 
-        return $this->createOrder(
+        $order = $this->createOrder(
             customerData: [
                 'name' => $data['customerName'],
                 'phone' => $data['customerPhone'],
@@ -127,9 +130,18 @@ class OrderService
             paymentLedgerCode: 'AR',
             causedByAnonymous: true,
             activityLabel: fn (Order $order) => "Guest checkout — Order {$order->order_number} placed",
+            existingCustomerId: $accountCustomerId,
             couponCode: $data['couponCode'] ?? null,
             currencyId: $data['currencyId'] ?? null,
         );
+
+        $this->notificationService->notifyStaff(
+            'order_view',
+            'new_order',
+            "New online order {$order->order_number} from {$order->customer_name} — TZS ".number_format((float) $order->total_amount, 2).'.',
+        );
+
+        return $order;
     }
 
     /**
@@ -273,6 +285,14 @@ class OrderService
                     referenceType: Order::class,
                     referenceId: $order->id,
                 );
+
+                if ($this->inventoryService->quantityAt($product->id, $outlet->id) === 0) {
+                    $this->notificationService->notifyStaff(
+                        'inventory_view',
+                        'out_of_stock',
+                        "{$product->name} is now out of stock at {$outlet->name} (order {$order->order_number}).",
+                    );
+                }
 
                 $resolved = $this->priceListService->resolvePrice(
                     productId: $product->id,
@@ -876,6 +896,8 @@ class OrderService
 
             $order->status = 'cancelled';
             $order->save();
+
+            $this->notifyCustomerOfStatusChange($order);
 
             activity('order')
                 ->performedOn($order)
