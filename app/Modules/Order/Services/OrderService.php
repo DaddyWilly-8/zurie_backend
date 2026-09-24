@@ -104,8 +104,11 @@ class OrderService
      * lines in the same request. No partial orders, no phantom decrements.
      *
      * @param  array<string, mixed>  $data  validated StoreOrderRequest payload
+     * @param  int|null  $accountCustomerId  the signed-in storefront customer's
+     *                                       own customer record, if any — the order is filed under it rather
+     *                                       than matched by the typed phone number
      */
-    public function checkout(array $data): Order
+    public function checkout(array $data, ?int $accountCustomerId = null): Order
     {
         $outlet = $this->outletService->defaultOnlineOutlet();
 
@@ -127,6 +130,7 @@ class OrderService
             paymentLedgerCode: 'AR',
             causedByAnonymous: true,
             activityLabel: fn (Order $order) => "Guest checkout — Order {$order->order_number} placed",
+            existingCustomerId: $accountCustomerId,
             couponCode: $data['couponCode'] ?? null,
             currencyId: $data['currencyId'] ?? null,
         );

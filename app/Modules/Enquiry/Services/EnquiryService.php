@@ -23,7 +23,7 @@ class EnquiryService
     {
         $enquiry = Enquiry::create([
             'name' => $data['name'],
-            'email' => $data['email'],
+            'email' => $data['email'] ?? null,
             'message' => $data['message'],
             'phone' => $data['phone'] ?? null,
             'subject' => $data['subject'] ?? null,

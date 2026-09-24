@@ -26,9 +26,19 @@ class AppServiceProvider extends ServiceProvider
         // Backs the `throttle:api` middleware attached to the api group in
         // bootstrap/app.php — required by zurie-backend-implementation-spec.md §14.
         // Keyed by user ID when authenticated, falling back to IP for public
-        // endpoints (checkout, contact, newsletter, etc.).
+        // endpoints (checkout, contact, newsletter, etc.). A single admin
+        // screen fires ~10 calls (auth, settings, notifications, lookups,
+        // the list itself), so 60/min throttled staff working at a normal
+        // pace; sensitive endpoints keep their own tighter limiters below.
         RateLimiter::for('api', function (Request $request) {
-            return Limit::perMinute(60)->by($request->user()?->id ?: $request->ip());
+            if ($staff = $request->user()) {
+                return Limit::perMinute(300)->by('staff:'.$staff->getAuthIdentifier());
+            }
+            if ($customer = $request->user('customer')) {
+                return Limit::perMinute(180)->by('customer:'.$customer->getAuthIdentifier());
+            }
+
+            return Limit::perMinute(120)->by($request->ip());
         });
 
         // Backs `throttle:login` on POST /auth/login (see

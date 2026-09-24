@@ -147,4 +147,19 @@ class NotificationsTest extends TestCase
         $this->actingAs($account, 'customer')->postJson('/api/v1/account/notifications/read-all')
             ->assertOk()->assertJsonPath('data.updated', 2);
     }
+
+    public function test_signed_in_customer_checkout_lands_on_their_account_whatever_phone_is_typed(): void
+    {
+        $stakeholderId = DB::table('stakeholders')->insertGetId(['name' => 'Neema', 'phone' => '0755555555', 'is_customer_role' => true, 'is_active' => true, 'created_at' => now(), 'updated_at' => now()]);
+        $account = CustomerAccount::create(['name' => 'Neema', 'email' => 'neema@example.com', 'password' => 'secret123', 'stakeholder_id' => $stakeholderId]);
+
+        $number = $this->actingAs($account, 'customer')->postJson('/api/v1/orders', [
+            'customerName' => 'Neema', 'customerPhone' => '0799999999',
+            'items' => [['productId' => $this->productId, 'quantity' => 1]],
+        ])->assertCreated()->json('data.orderNumber');
+
+        $this->assertSame($stakeholderId, (int) DB::table('orders')->where('order_number', $number)->value('stakeholder_id'));
+        $this->actingAs($account, 'customer')->getJson('/api/v1/account/orders')
+            ->assertOk()->assertJsonPath('data.0.orderNumber', $number);
+    }
 }

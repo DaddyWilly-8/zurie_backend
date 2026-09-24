@@ -18,9 +18,11 @@ class StoreEnquiryRequest extends FormRequest
     {
         return [
             'name' => ['required', 'string', 'max:255'],
-            'email' => ['required', 'email', 'max:255'],
+            // One way to reply is enough: WhatsApp/phone enquiries often
+            // come without an email.
+            'email' => ['nullable', 'required_without:phone', 'email', 'max:255'],
             'message' => ['required', 'string'],
-            'phone' => ['nullable', 'string', 'max:50'],
+            'phone' => ['nullable', 'required_without:email', 'string', 'max:50'],
             'subject' => ['nullable', 'string', 'max:255'],
         ];
     }
