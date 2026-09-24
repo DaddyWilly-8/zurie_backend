@@ -8,7 +8,7 @@ Route::get('products/{productId}/reviews', [ReviewController::class, 'index']);
 
 // Customer-only self-service.
 Route::middleware('auth:customer')->group(function (): void {
-    Route::post('account/reviews', [ReviewController::class, 'store']);
+    Route::post('account/reviews', [ReviewController::class, 'store'])->middleware('throttle:public-form');
 });
 
 // Staff-only moderation — unaffected by the customer/staff split, still

@@ -88,6 +88,13 @@ class AppServiceProvider extends ServiceProvider
             return Limit::perMinute(10)->by($request->ip());
         });
 
+        // Backs `throttle:coupon` on POST /coupons/preview — the general
+        // limiter would allow ~170k code guesses a day per IP. 20/min still
+        // covers a shopper whose cart re-checks the code on every change.
+        RateLimiter::for('coupon', function (Request $request) {
+            return Limit::perMinute(20)->by($request->ip());
+        });
+
         RateLimiter::for('register', function (Request $request) {
             return Limit::perMinute(5)->by($request->ip());
         });

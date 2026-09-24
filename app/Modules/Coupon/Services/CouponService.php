@@ -17,9 +17,18 @@ class CouponService
      *
      * @throws InvalidCouponException
      */
-    public function validate(string $code, float $subtotal): Coupon
+    public function validate(string $code, float $subtotal, bool $forUpdate = false): Coupon
     {
-        $coupon = Coupon::where('code', $code)->first();
+        // $forUpdate is set by checkout, which runs inside a transaction:
+        // it locks the coupon row so concurrent orders can't all read the
+        // same used_count and blow past max_uses (a load test redeemed a
+        // 5-use coupon 13 times before this). For the preview endpoint
+        // (no transaction) lockForUpdate is a harmless no-op.
+        $query = Coupon::where('code', $code);
+        if ($forUpdate) {
+            $query->lockForUpdate();
+        }
+        $coupon = $query->first();
         if ($coupon === null) {
             throw new InvalidCouponException("Coupon code '{$code}' does not exist.");
         }

@@ -2,11 +2,11 @@
 
 namespace App\Modules\Account\Controllers;
 
+use App\Http\Controllers\Controller;
 use App\Modules\Customer\Resources\CustomerResource;
 use App\Modules\Customer\Services\CustomerService;
 use App\Modules\Order\Resources\OrderResource;
 use App\Modules\Order\Services\OrderService;
-use App\Http\Controllers\Controller;
 use App\Support\Http\ApiResponse;
 use Illuminate\Http\Request;
 
@@ -48,9 +48,10 @@ class AccountController extends Controller
         }
 
         $page = max(1, (int) $request->query('page', 1));
-        $pageSize = max(1, (int) $request->query('pageSize', 20));
+        $pageSize = $this->pageSize($request);
 
-        $orders = $this->orderService->paginateForCustomer($customer->id, $page, $pageSize);
+        $account = $request->user('customer');
+        $orders = $this->orderService->paginateForCustomer($customer->id, $page, $pageSize, $account->created_at, $account->email);
 
         return $this->paginated(
             OrderResource::collection($orders->items()),

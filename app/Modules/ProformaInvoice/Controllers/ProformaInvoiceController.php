@@ -19,7 +19,7 @@ class ProformaInvoiceController extends Controller
     public function index(Request $request)
     {
         $page = max(1, (int) $request->query('page', 1));
-        $pageSize = max(1, (int) $request->query('pageSize', 20));
+        $pageSize = $this->pageSize($request);
 
         $proformas = $this->proformaInvoiceService->paginateAdmin($page, $pageSize);
 

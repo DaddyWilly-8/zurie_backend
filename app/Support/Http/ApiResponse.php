@@ -3,6 +3,7 @@
 namespace App\Support\Http;
 
 use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
 
 /**
  * Every endpoint in the system follows exactly one of the four response shapes
@@ -29,7 +30,21 @@ trait ApiResponse
         if ($data === null) {
             return $this->ok(null, 201);
         }
+
         return $this->ok($data, 201);
+    }
+
+    /** Largest page any list endpoint will serve in one request. */
+    protected const MAX_PAGE_SIZE = 100;
+
+    /**
+     * The `pageSize` query parameter, clamped to 1..MAX_PAGE_SIZE so one
+     * request (e.g. `?pageSize=1000000` on the public product list) can't
+     * make the server load and serialize an entire table.
+     */
+    protected function pageSize(Request $request, int $default = 20): int
+    {
+        return min(self::MAX_PAGE_SIZE, max(1, (int) $request->query('pageSize', $default)));
     }
 
     /**

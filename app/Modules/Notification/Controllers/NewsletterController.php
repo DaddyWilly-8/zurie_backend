@@ -30,7 +30,7 @@ class NewsletterController extends Controller
     public function index(Request $request)
     {
         $page = max(1, (int) $request->query('page', 1));
-        $pageSize = max(1, (int) $request->query('pageSize', 50));
+        $pageSize = $this->pageSize($request, 50);
         $subscribers = $this->newsletterService->paginate($request->query('search'), $page, $pageSize);
 
         return $this->paginated(
