@@ -72,6 +72,12 @@ class AppServiceProvider extends ServiceProvider
         // key) since these endpoints don't take a pre-existing account
         // identity the same way — an email is part of the payload being
         // created/targeted, not a stable key to rate-limit by.
+        // Anonymous storefront forms (contact, newsletter) — keeps a bot
+        // from flooding the enquiries inbox or the subscriber list.
+        RateLimiter::for('public-form', function (Request $request) {
+            return Limit::perMinute(10)->by($request->ip());
+        });
+
         RateLimiter::for('register', function (Request $request) {
             return Limit::perMinute(5)->by($request->ip());
         });

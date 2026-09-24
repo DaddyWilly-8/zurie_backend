@@ -1,7 +1,10 @@
 <?php
 
+use App\Modules\Notification\Controllers\NewsletterController;
 use App\Modules\Notification\Controllers\NotificationController;
 use Illuminate\Support\Facades\Route;
+
+Route::post('newsletter', [NewsletterController::class, 'subscribe'])->middleware('throttle:public-form');
 
 Route::middleware('auth:customer')->group(function (): void {
     Route::get('account/notifications', [NotificationController::class, 'index']);
@@ -16,4 +19,8 @@ Route::middleware('auth:sanctum')->group(function (): void {
     Route::get('admin/notifications', [NotificationController::class, 'staffIndex']);
     Route::post('admin/notifications/read-all', [NotificationController::class, 'staffMarkAllRead']);
     Route::patch('admin/notifications/{notification}/read', [NotificationController::class, 'staffMarkRead']);
+
+    // Subscribers are customer contact data — same permission as the
+    // customer list.
+    Route::get('admin/newsletter-subscribers', [NewsletterController::class, 'index'])->middleware('permission:customer_view');
 });
