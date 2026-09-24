@@ -27,6 +27,10 @@ class StoreCategoryRequest extends FormRequest
             'description' => ['nullable', 'string'],
             'visible' => ['nullable', 'boolean'],
             'sortOrder' => ['nullable', 'integer', 'min:0'],
+            // Independent, both optional — see the migration that added
+            // these columns for the fallback-to-global-ledger reasoning.
+            'incomeLedgerId' => ['nullable', 'integer', 'exists:ledgers,id'],
+            'expenseLedgerId' => ['nullable', 'integer', 'exists:ledgers,id'],
         ];
     }
 }

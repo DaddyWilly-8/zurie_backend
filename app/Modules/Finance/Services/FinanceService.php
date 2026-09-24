@@ -504,6 +504,19 @@ class FinanceService
     }
 
     /**
+     * Plain by-id lookup for a module that only holds a ledger id as a
+     * loose FK column (e.g. `categories.income_ledger_id`) and needs the
+     * actual Ledger to post against — nullable, since that column itself
+     * is always optional. Cross-module read via this Service, per the
+     * Extensibility Constitution — never a direct Eloquent reach into
+     * `ledgers` from another module.
+     */
+    public function findLedger(?int $id): ?Ledger
+    {
+        return $id === null ? null : Ledger::find($id);
+    }
+
+    /**
      * Assets = Liabilities + Equity, at any point in time — not just at a
      * period boundary, since this codebase never posts closing entries
      * (income/expense ledgers just keep accumulating). To balance without

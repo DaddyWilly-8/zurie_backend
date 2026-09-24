@@ -30,6 +30,8 @@ class UpdateCategoryRequest extends FormRequest
             'description' => ['nullable', 'string'],
             'visible' => ['nullable', 'boolean'],
             'sortOrder' => ['nullable', 'integer', 'min:0'],
+            'incomeLedgerId' => ['nullable', 'integer', 'exists:ledgers,id'],
+            'expenseLedgerId' => ['nullable', 'integer', 'exists:ledgers,id'],
         ];
     }
 }

@@ -20,6 +20,8 @@ class CategoryResource extends JsonResource
             'imageUrl' => $this->image_url,
             'visible' => $this->visible,
             'sortOrder' => $this->sort_order,
+            'incomeLedgerId' => $this->income_ledger_id,
+            'expenseLedgerId' => $this->expense_ledger_id,
         ];
     }
 }

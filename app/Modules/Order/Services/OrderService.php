@@ -11,9 +11,11 @@ use App\Modules\Auth\Services\CustomerAccountService;
 use App\Modules\Notification\Services\NotificationService;
 use App\Modules\Order\Exceptions\InvalidOrderTransitionException;
 use App\Modules\Order\Models\Order;
+use App\Modules\Finance\Models\Ledger;
 use App\Modules\Outlet\Models\SalesOutlet;
 use App\Modules\Outlet\Services\OutletService;
 use App\Modules\PriceList\Services\PriceListService;
+use App\Modules\Product\Services\CategoryService;
 use App\Modules\Product\Services\ProductService;
 use App\Modules\Vat\Services\VatService;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
@@ -67,6 +69,7 @@ class OrderService
         private readonly CurrencyService $currencyService,
         private readonly VatService $vatService,
         private readonly CustomerAccountService $customerAccountService,
+        private readonly CategoryService $categoryService,
     ) {}
 
     /**
@@ -243,6 +246,12 @@ class OrderService
             $totalRevenue = 0.0;
             $totalCost = 0.0;
             $totalVat = 0.0;
+            // Keyed by category id — how much of this order's revenue/cost
+            // belongs to each category, so postSaleToLedger() can post
+            // Sales/COGS per category's own Income/Expense ledger where
+            // one's set (falling back to the global SALES/COGS ledger
+            // otherwise). See resolveCategoryLedger()'s docblock.
+            $categoryTotals = [];
 
             // Lock every needed stock row up front in a fixed order, so two
             // carts with the same products in opposite order can't deadlock.
@@ -280,6 +289,10 @@ class OrderService
                 $lineCost = (float) $product->buying_price * $line['quantity'];
                 $totalRevenue += $lineTotal;
                 $totalCost += $lineCost;
+
+                $categoryTotals[$product->category_id] ??= ['revenue' => 0.0, 'cost' => 0.0];
+                $categoryTotals[$product->category_id]['revenue'] += $lineTotal;
+                $categoryTotals[$product->category_id]['cost'] += $lineCost;
 
                 // Phase E (VAT/Tax) — system-computed only, never trusted
                 // from the client, same "authoritative pricing only" rule
@@ -326,7 +339,7 @@ class OrderService
                 $this->couponService->redeem($coupon);
             }
 
-            $this->postSaleToLedger($order, $totalRevenue, $discount, $totalCost, $totalVat, $outlet->cost_center_id, $paymentLedgerCode, $currency->id, $exchangeRate);
+            $this->postSaleToLedger($order, $totalRevenue, $discount, $totalCost, $totalVat, $categoryTotals, $outlet->cost_center_id, $paymentLedgerCode, $currency->id, $exchangeRate);
 
             if ($totalVat > 0) {
                 $this->vatService->record($order, 'output', $totalVat);
@@ -358,11 +371,12 @@ class OrderService
      * (Phase 5) falls straight out of the ledger. See
      * Zurie_V2_Architecture_Design (2).md §30.2/§34's worked example.
      */
-    private function postSaleToLedger(Order $order, float $grossRevenue, float $discount, float $cost, float $vat, ?int $costCenterId, string $paymentLedgerCode, ?int $currencyId = null, ?float $exchangeRate = null): void
+    /**
+     * @param  array<int|null, array{revenue: float, cost: float}>  $categoryTotals
+     */
+    private function postSaleToLedger(Order $order, float $grossRevenue, float $discount, float $cost, float $vat, array $categoryTotals, ?int $costCenterId, string $paymentLedgerCode, ?int $currencyId = null, ?float $exchangeRate = null): void
     {
         $paymentLedger = $this->financeService->systemLedger($paymentLedgerCode);
-        $sales = $this->financeService->systemLedger('SALES');
-        $cogs = $this->financeService->systemLedger('COGS');
         $inventoryAsset = $this->financeService->systemLedger('INV-ASSET');
 
         $lines = [
@@ -370,10 +384,25 @@ class OrderService
             // owed to the government, not revenue, so it's credited to
             // VAT Output rather than Sales Account.
             ['ledger_id' => $paymentLedger->id, 'type' => 'debit', 'amount' => $grossRevenue - $discount + $vat, 'cost_center_id' => $costCenterId],
-            ['ledger_id' => $sales->id, 'type' => 'credit', 'amount' => $grossRevenue, 'cost_center_id' => $costCenterId],
-            ['ledger_id' => $cogs->id, 'type' => 'debit', 'amount' => $cost, 'cost_center_id' => $costCenterId],
             ['ledger_id' => $inventoryAsset->id, 'type' => 'credit', 'amount' => $cost, 'cost_center_id' => $costCenterId],
         ];
+
+        // Revenue/cost split one Sales-credit and COGS-debit line per
+        // category present in the order, each against that category's own
+        // Income/Expense ledger if it has one set, else the global
+        // SALES/COGS system ledgers — see resolveCategoryLedger(). Every
+        // other line (payment, inventory, discount, VAT) stays a single
+        // aggregate line exactly as before this split; only revenue/cost
+        // classification is category-aware, which is all the feature asked
+        // for. The sum of these lines always equals $grossRevenue/$cost
+        // exactly, since $categoryTotals was built from the same items.
+        foreach ($categoryTotals as $categoryId => $totals) {
+            $income = $this->resolveCategoryLedger($categoryId, 'income_ledger_id', 'SALES');
+            $expense = $this->resolveCategoryLedger($categoryId, 'expense_ledger_id', 'COGS');
+
+            $lines[] = ['ledger_id' => $income->id, 'type' => 'credit', 'amount' => $totals['revenue'], 'cost_center_id' => $costCenterId];
+            $lines[] = ['ledger_id' => $expense->id, 'type' => 'debit', 'amount' => $totals['cost'], 'cost_center_id' => $costCenterId];
+        }
 
         if ($discount > 0) {
             $salesDiscounts = $this->financeService->systemLedger('SALES-DISC');
@@ -396,31 +425,65 @@ class OrderService
     }
 
     /**
+     * A category's own ledger for the given $field (income_ledger_id or
+     * expense_ledger_id) when it has one set, else the matching global
+     * system ledger ($fallbackCode). $categoryId itself can be null (a
+     * product whose category was deleted after the sale — see cancel()'s
+     * own category lookup) or the category row can have been deleted —
+     * both fall back the same way as "field not set", never an error, so
+     * a sale can never fail to post just because a category's own ledger
+     * setup is incomplete or gone.
+     */
+    private function resolveCategoryLedger(?int $categoryId, string $field, string $fallbackCode): Ledger
+    {
+        if ($categoryId !== null) {
+            $category = $this->categoryService->findOrNull($categoryId);
+            $ledgerId = $category?->{$field};
+
+            $ledger = $this->financeService->findLedger($ledgerId);
+            if ($ledger !== null) {
+                return $ledger;
+            }
+        }
+
+        return $this->financeService->systemLedger($fallbackCode);
+    }
+
+    /**
      * Exact mirror of postSaleToLedger() with debit/credit swapped — used
      * by cancel() so a cancelled order's revenue/COGS/discount impact
      * nets to zero in the ledger, not just in the order's own status.
-     * Gross revenue and discount are reconstructed from the order's own
-     * stored total_amount/discount_amount (total_amount is already net of
-     * discount) rather than re-summing items, since a coupon's discount
-     * can't otherwise be recovered after the fact.
+     * Discount/VAT are reconstructed from the order's own stored columns
+     * (total_amount is already net of discount) since a coupon's discount
+     * can't otherwise be recovered after the fact — but revenue/cost
+     * themselves come from $categoryTotals (built by cancel() from the
+     * order's actual line items), the same per-category split
+     * postSaleToLedger() posted at sale time, so the reversal lands on
+     * exactly the ledgers the original sale did.
+     *
+     * @param  array<int|null, array{revenue: float, cost: float}>  $categoryTotals
      */
-    private function reverseSaleLedger(Order $order, float $cost, string $paymentLedgerCode, ?int $costCenterId): void
+    private function reverseSaleLedger(Order $order, float $cost, array $categoryTotals, string $paymentLedgerCode, ?int $costCenterId): void
     {
         $discount = (float) $order->discount_amount;
         $vat = (float) $order->vat_amount;
         $grossRevenue = (float) $order->total_amount + $discount;
 
         $paymentLedger = $this->financeService->systemLedger($paymentLedgerCode);
-        $sales = $this->financeService->systemLedger('SALES');
-        $cogs = $this->financeService->systemLedger('COGS');
         $inventoryAsset = $this->financeService->systemLedger('INV-ASSET');
 
         $lines = [
-            ['ledger_id' => $sales->id, 'type' => 'debit', 'amount' => $grossRevenue, 'cost_center_id' => $costCenterId],
             ['ledger_id' => $paymentLedger->id, 'type' => 'credit', 'amount' => $grossRevenue - $discount + $vat, 'cost_center_id' => $costCenterId],
             ['ledger_id' => $inventoryAsset->id, 'type' => 'debit', 'amount' => $cost, 'cost_center_id' => $costCenterId],
-            ['ledger_id' => $cogs->id, 'type' => 'credit', 'amount' => $cost, 'cost_center_id' => $costCenterId],
         ];
+
+        foreach ($categoryTotals as $categoryId => $totals) {
+            $income = $this->resolveCategoryLedger($categoryId, 'income_ledger_id', 'SALES');
+            $expense = $this->resolveCategoryLedger($categoryId, 'expense_ledger_id', 'COGS');
+
+            $lines[] = ['ledger_id' => $income->id, 'type' => 'debit', 'amount' => $totals['revenue'], 'cost_center_id' => $costCenterId];
+            $lines[] = ['ledger_id' => $expense->id, 'type' => 'credit', 'amount' => $totals['cost'], 'cost_center_id' => $costCenterId];
+        }
 
         if ($discount > 0) {
             $salesDiscounts = $this->financeService->systemLedger('SALES-DISC');
@@ -693,7 +756,17 @@ class OrderService
 
             $this->inventoryService->lockStockRows($order->items->pluck('product_id')->all(), $order->outlet_id);
 
+            // productId => categoryId, batched — order_items only stores
+            // product_id, so the per-category split reverseSaleLedger()
+            // needs (matching postSaleToLedger()'s own split at sale time)
+            // has to be reconstructed via this lookup rather than read
+            // directly off the item.
+            $categoryIdsByProduct = $this->productService->categoryIdsFor(
+                $order->items->pluck('product_id')->unique()->all(),
+            );
+
             $totalCost = 0.0;
+            $categoryTotals = [];
             foreach ($order->items as $item) {
                 $this->inventoryService->restockForOrder(
                     $item->product_id,
@@ -702,12 +775,18 @@ class OrderService
                     referenceType: Order::class,
                     referenceId: $order->id,
                 );
-                $totalCost += (float) $item->unit_buying_price * $item->quantity;
+                $lineCost = (float) $item->unit_buying_price * $item->quantity;
+                $totalCost += $lineCost;
+
+                $categoryId = $categoryIdsByProduct[$item->product_id] ?? null;
+                $categoryTotals[$categoryId] ??= ['revenue' => 0.0, 'cost' => 0.0];
+                $categoryTotals[$categoryId]['revenue'] += (float) $item->line_total;
+                $categoryTotals[$categoryId]['cost'] += $lineCost;
             }
 
             $paymentLedgerCode = $order->source === 'pos' ? 'CASH' : 'AR';
             $outlet = $order->outlet_id !== null ? $this->outletService->findOrFail($order->outlet_id) : null;
-            $this->reverseSaleLedger($order, $totalCost, $paymentLedgerCode, $outlet?->cost_center_id);
+            $this->reverseSaleLedger($order, $totalCost, $categoryTotals, $paymentLedgerCode, $outlet?->cost_center_id);
 
             // Give back the coupon use a cancelled order consumed — without
             // this, a maxUses-limited coupon is permanently burned by an

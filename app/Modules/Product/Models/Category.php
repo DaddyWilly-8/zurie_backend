@@ -8,7 +8,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 use Spatie\Activitylog\Models\Concerns\LogsActivity;
 use Spatie\Activitylog\Support\LogOptions;
 
-#[Fillable(['name', 'slug', 'description', 'image_url', 'visible', 'sort_order'])]
+#[Fillable(['name', 'slug', 'description', 'image_url', 'visible', 'sort_order', 'income_ledger_id', 'expense_ledger_id'])]
 class Category extends Model
 {
     use LogsActivity;
@@ -17,7 +17,7 @@ class Category extends Model
     {
         return LogOptions::defaults()
             ->useLogName('category')
-            ->logOnly(['name', 'slug', 'visible', 'sort_order'])
+            ->logOnly(['name', 'slug', 'visible', 'sort_order', 'income_ledger_id', 'expense_ledger_id'])
             ->logOnlyDirty()
             ->dontLogEmptyChanges()
             ->setDescriptionForEvent(fn (string $event): string => "Category '{$this->name}' {$event}");

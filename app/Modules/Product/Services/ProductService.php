@@ -63,6 +63,26 @@ class ProductService
     }
 
     /**
+     * Batched product id => category id, for OrderService's cancel()
+     * reconstructing which category each order line's revenue/cost
+     * belongs to (order_items only stores product_id, not category_id).
+     * A product deleted since the sale simply has no entry — the caller
+     * treats a missing id the same as "category unknown", falling back to
+     * the global SALES/COGS ledgers for that line.
+     *
+     * @param  array<int, int>  $productIds
+     * @return array<int, int>  productId => categoryId
+     */
+    public function categoryIdsFor(array $productIds): array
+    {
+        if (empty($productIds)) {
+            return [];
+        }
+
+        return Product::query()->whereIn('id', $productIds)->pluck('category_id', 'id')->all();
+    }
+
+    /**
      * Batched buying-price lookup — the Inventory Value report's
      * valuation basis (quantity × buying price, matching COGS's own
      * costing basis rather than selling price).
@@ -97,7 +117,7 @@ class ProductService
     public function findActiveForOrder(int $id): Product
     {
         return Product::query()
-            ->select(['id', 'name', 'price', 'sale_price', 'buying_price'])
+            ->select(['id', 'name', 'price', 'sale_price', 'buying_price', 'category_id'])
             ->where('status', 'published')
             ->findOrFail($id);
     }

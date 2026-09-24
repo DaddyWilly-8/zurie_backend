@@ -57,6 +57,16 @@ class CategoryService
     }
 
     /**
+     * Nullable counterpart to find() — for callers (OrderService's
+     * per-category ledger resolution) that need to treat "category
+     * deleted since the sale" as a normal fallback case, not an error.
+     */
+    public function findOrNull(int $id): ?Category
+    {
+        return Category::query()->find($id);
+    }
+
+    /**
      * @param  array<string, mixed>  $data
      */
     public function create(array $data): Category
@@ -67,6 +77,8 @@ class CategoryService
             'description' => $data['description'] ?? null,
             'visible' => $data['visible'] ?? true,
             'sort_order' => $data['sortOrder'] ?? 0,
+            'income_ledger_id' => $data['incomeLedgerId'] ?? null,
+            'expense_ledger_id' => $data['expenseLedgerId'] ?? null,
         ]);
     }
 
@@ -75,12 +87,19 @@ class CategoryService
      */
     public function update(Category $category, array $data): Category
     {
+        // incomeLedgerId/expenseLedgerId use array_key_exists, not `??` —
+        // the client must be able to explicitly clear one back to null
+        // (falling back to the global system ledger again), and `??`
+        // would silently keep the old value instead since `null ?? $old`
+        // evaluates to $old, not null.
         $category->fill([
             'name' => $data['name'] ?? $category->name,
             'slug' => $data['slug'] ?? $category->slug,
             'description' => $data['description'] ?? $category->description,
             'visible' => $data['visible'] ?? $category->visible,
             'sort_order' => $data['sortOrder'] ?? $category->sort_order,
+            'income_ledger_id' => array_key_exists('incomeLedgerId', $data) ? $data['incomeLedgerId'] : $category->income_ledger_id,
+            'expense_ledger_id' => array_key_exists('expenseLedgerId', $data) ? $data['expenseLedgerId'] : $category->expense_ledger_id,
         ])->save();
 
         return $category;
