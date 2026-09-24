@@ -24,6 +24,8 @@ class PublicProductResource extends JsonResource
             'category' => $this->whenLoaded('category', fn() => new CategoryResource($this->category)),
             'price' => (float) $this->price,
             'salePrice' => $this->sale_price !== null ? (float) $this->sale_price : null,
+            // Lets the cart show the same VAT line checkout will charge.
+            'vatExempted' => (bool) $this->vat_exempted,
             'material' => $this->material,
             'colors' => $this->whenLoaded('colors', fn() => $this->colors->map(fn($color) => [
                 'name' => $color->name,

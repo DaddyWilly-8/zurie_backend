@@ -32,6 +32,7 @@ class OrderResource extends JsonResource
             'totalAmount' => (float) $this->total_amount,
             'discountAmount' => (float) $this->discount_amount,
             'vatAmount' => (float) $this->vat_amount,
+            'pricesIncludeVat' => (bool) $this->prices_include_vat,
             'couponId' => $this->coupon_id,
             'currencyId' => $this->currency_id,
             'exchangeRate' => $this->exchange_rate !== null ? (float) $this->exchange_rate : null,

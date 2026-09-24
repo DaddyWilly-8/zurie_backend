@@ -23,6 +23,8 @@ class PublicProductListResource extends JsonResource
             'slug' => $this->slug,
             'price' => (float) $this->price,
             'salePrice' => $this->sale_price !== null ? (float) $this->sale_price : null,
+            // Lets the cart show the same VAT line checkout will charge.
+            'vatExempted' => (bool) $this->vat_exempted,
             'featuredImageUrl' => $this->whenLoaded('images', fn() => $this->images->first()?->url),
             'category' => $this->whenLoaded('category', fn() => new CategoryResource($this->category)),
             // Resolved from the Inventory module's batched service call — see

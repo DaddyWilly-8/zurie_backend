@@ -2,16 +2,16 @@
 
 namespace App\Modules\Order\Services;
 
+use App\Modules\Auth\Services\CustomerAccountService;
 use App\Modules\Coupon\Services\CouponService;
 use App\Modules\Currency\Services\CurrencyService;
 use App\Modules\Customer\Services\CustomerService;
+use App\Modules\Finance\Models\Ledger;
 use App\Modules\Finance\Services\FinanceService;
 use App\Modules\Inventory\Services\InventoryService;
-use App\Modules\Auth\Services\CustomerAccountService;
 use App\Modules\Notification\Services\NotificationService;
 use App\Modules\Order\Exceptions\InvalidOrderTransitionException;
 use App\Modules\Order\Models\Order;
-use App\Modules\Finance\Models\Ledger;
 use App\Modules\Outlet\Models\SalesOutlet;
 use App\Modules\Outlet\Services\OutletService;
 use App\Modules\PriceList\Services\PriceListService;
@@ -83,7 +83,7 @@ class OrderService
      */
     private static function generateOrderNumber(int $id): string
     {
-        return 'ORD-' . str_pad((string) $id, 6, '0', STR_PAD_LEFT);
+        return 'ORD-'.str_pad((string) $id, 6, '0', STR_PAD_LEFT);
     }
 
     /**
@@ -245,13 +245,7 @@ class OrderService
 
             $totalRevenue = 0.0;
             $totalCost = 0.0;
-            $totalVat = 0.0;
-            // Keyed by category id — how much of this order's revenue/cost
-            // belongs to each category, so postSaleToLedger() can post
-            // Sales/COGS per category's own Income/Expense ledger where
-            // one's set (falling back to the global SALES/COGS ledger
-            // otherwise). See resolveCategoryLedger()'s docblock.
-            $categoryTotals = [];
+            $lines = [];
 
             // Lock every needed stock row up front in a fixed order, so two
             // carts with the same products in opposite order can't deadlock.
@@ -290,29 +284,19 @@ class OrderService
                 $totalRevenue += $lineTotal;
                 $totalCost += $lineCost;
 
-                $categoryTotals[$product->category_id] ??= ['revenue' => 0.0, 'cost' => 0.0];
-                $categoryTotals[$product->category_id]['revenue'] += $lineTotal;
-                $categoryTotals[$product->category_id]['cost'] += $lineCost;
-
                 // Phase E (VAT/Tax) — system-computed only, never trusted
                 // from the client, same "authoritative pricing only" rule
                 // this method already applies to price/name/cost — see
                 // config/zurie.php's docblock for why this isn't a
                 // client-supplied field.
-                $vatPercentage = $product->vat_exempted ? 0.0 : (float) config('zurie.default_vat_percentage');
-                $vatAmount = $lineTotal * $vatPercentage / 100;
-                $totalVat += $vatAmount;
-
-                $order->items()->create([
-                    'product_id' => $product->id,
-                    'product_name' => $product->name,
-                    'unit_buying_price' => $product->buying_price,
-                    'unit_selling_price' => $unitSellingPrice,
+                $lines[] = [
+                    'product' => $product,
                     'quantity' => $line['quantity'],
-                    'line_total' => $lineTotal,
-                    'vat_percentage' => $vatPercentage,
-                    'vat_amount' => $vatAmount,
-                ]);
+                    'unitSellingPrice' => $unitSellingPrice,
+                    'lineTotal' => $lineTotal,
+                    'lineCost' => $lineCost,
+                    'vatPercentage' => $product->vat_exempted ? 0.0 : (float) config('zurie.default_vat_percentage'),
+                ];
             }
 
             // Coupon validated against the gross subtotal (before
@@ -328,10 +312,45 @@ class OrderService
                 $discount = $this->couponService->calculateDiscount($coupon, $totalRevenue);
             }
 
+            $pricesIncludeVat = (bool) config('zurie.prices_include_vat');
+            $lineVats = $this->vatPerLine($lines, $discount, $pricesIncludeVat);
+            $totalVat = round(array_sum($lineVats), 2);
+
+            // Keyed by category id — how much of this order's revenue/cost
+            // belongs to each category, so postSaleToLedger() can post
+            // Sales/COGS per category's own Income/Expense ledger where
+            // one's set (falling back to the global SALES/COGS ledger
+            // otherwise). See resolveCategoryLedger()'s docblock.
+            $categoryTotals = [];
+            foreach ($lines as $index => $line) {
+                $product = $line['product'];
+
+                $order->items()->create([
+                    'product_id' => $product->id,
+                    'product_name' => $product->name,
+                    'unit_buying_price' => $product->buying_price,
+                    'unit_selling_price' => $line['unitSellingPrice'],
+                    'quantity' => $line['quantity'],
+                    'line_total' => $line['lineTotal'],
+                    'vat_percentage' => $line['vatPercentage'],
+                    'vat_amount' => $lineVats[$index],
+                ]);
+
+                $categoryTotals[$product->category_id] ??= ['revenue' => 0.0, 'cost' => 0.0];
+                $categoryTotals[$product->category_id]['revenue'] += $this->lineRevenue($line['lineTotal'], $lineVats[$index], $pricesIncludeVat);
+                $categoryTotals[$product->category_id]['cost'] += $line['lineCost'];
+            }
+
+            // What the customer actually pays: VAT-inclusive prices already
+            // contain the VAT; otherwise it's added on top. Always net of
+            // the coupon discount.
+            $amountDue = round($totalRevenue - $discount + ($pricesIncludeVat ? 0.0 : $totalVat), 2);
+
             $order->update([
-                'total_amount' => $totalRevenue - $discount,
+                'total_amount' => $amountDue,
                 'discount_amount' => $discount,
                 'vat_amount' => $totalVat,
+                'prices_include_vat' => $pricesIncludeVat,
                 'coupon_id' => $coupon?->id,
             ]);
 
@@ -339,7 +358,7 @@ class OrderService
                 $this->couponService->redeem($coupon);
             }
 
-            $this->postSaleToLedger($order, $totalRevenue, $discount, $totalCost, $totalVat, $categoryTotals, $outlet->cost_center_id, $paymentLedgerCode, $currency->id, $exchangeRate);
+            $this->postSaleToLedger($order, $amountDue, $discount, $totalCost, $totalVat, $categoryTotals, $outlet->cost_center_id, $paymentLedgerCode, $currency->id, $exchangeRate);
 
             if ($totalVat > 0) {
                 $this->vatService->record($order, 'output', $totalVat);
@@ -374,16 +393,17 @@ class OrderService
     /**
      * @param  array<int|null, array{revenue: float, cost: float}>  $categoryTotals
      */
-    private function postSaleToLedger(Order $order, float $grossRevenue, float $discount, float $cost, float $vat, array $categoryTotals, ?int $costCenterId, string $paymentLedgerCode, ?int $currencyId = null, ?float $exchangeRate = null): void
+    private function postSaleToLedger(Order $order, float $amountDue, float $discount, float $cost, float $vat, array $categoryTotals, ?int $costCenterId, string $paymentLedgerCode, ?int $currencyId = null, ?float $exchangeRate = null): void
     {
         $paymentLedger = $this->financeService->systemLedger($paymentLedgerCode);
         $inventoryAsset = $this->financeService->systemLedger('INV-ASSET');
 
         $lines = [
-            // The customer pays gross - discount + VAT; VAT is a liability
-            // owed to the government, not revenue, so it's credited to
-            // VAT Output rather than Sales Account.
-            ['ledger_id' => $paymentLedger->id, 'type' => 'debit', 'amount' => $grossRevenue - $discount + $vat, 'cost_center_id' => $costCenterId],
+            // Exactly what the customer pays (the order's total_amount).
+            // VAT is a liability owed to the government, not revenue, so
+            // it's credited to VAT Output; the category revenue lines
+            // already exclude it (see lineRevenue()).
+            ['ledger_id' => $paymentLedger->id, 'type' => 'debit', 'amount' => $amountDue, 'cost_center_id' => $costCenterId],
             ['ledger_id' => $inventoryAsset->id, 'type' => 'credit', 'amount' => $cost, 'cost_center_id' => $costCenterId],
         ];
 
@@ -394,8 +414,8 @@ class OrderService
         // other line (payment, inventory, discount, VAT) stays a single
         // aggregate line exactly as before this split; only revenue/cost
         // classification is category-aware, which is all the feature asked
-        // for. The sum of these lines always equals $grossRevenue/$cost
-        // exactly, since $categoryTotals was built from the same items.
+        // for. Revenue lines sum to the net sales value and cost lines to
+        // $cost exactly, since $categoryTotals was built from the same items.
         foreach ($categoryTotals as $categoryId => $totals) {
             $income = $this->resolveCategoryLedger($categoryId, 'income_ledger_id', 'SALES');
             $expense = $this->resolveCategoryLedger($categoryId, 'expense_ledger_id', 'COGS');
@@ -422,6 +442,55 @@ class OrderService
             currencyId: $currencyId,
             exchangeRate: $exchangeRate,
         );
+    }
+
+    /**
+     * VAT per order line, computed on the price after the coupon discount.
+     * The discount is shared across lines in proportion to their value
+     * (the last line takes the rounding remainder, so the shares add up to
+     * the discount exactly), because lines can carry different VAT rates —
+     * a vat_exempted product owes none.
+     *
+     * With VAT-inclusive prices the VAT is extracted from the discounted
+     * line value (value x rate / (100 + rate)); otherwise it's added on top
+     * (value x rate / 100).
+     *
+     * @param  array<int, array{lineTotal: float, vatPercentage: float}>  $lines
+     * @return array<int, float>
+     */
+    private function vatPerLine(array $lines, float $discount, bool $pricesIncludeVat): array
+    {
+        $gross = array_sum(array_column($lines, 'lineTotal'));
+        $vats = [];
+        $discountLeft = $discount;
+        $lastIndex = array_key_last($lines);
+
+        foreach ($lines as $index => $line) {
+            $lineDiscount = $index === $lastIndex || $gross <= 0
+                ? $discountLeft
+                : round($discount * $line['lineTotal'] / $gross, 2);
+            $discountLeft -= $lineDiscount;
+
+            $taxable = max(0.0, $line['lineTotal'] - $lineDiscount);
+            $rate = $line['vatPercentage'];
+
+            $vats[$index] = $rate <= 0 ? 0.0 : round(
+                $pricesIncludeVat ? $taxable * $rate / (100 + $rate) : $taxable * $rate / 100,
+                2,
+            );
+        }
+
+        return $vats;
+    }
+
+    /**
+     * The revenue a line contributes to Sales before the (separately
+     * booked) discount: its full value when VAT is added on top, or its
+     * value minus the VAT inside it when prices include VAT.
+     */
+    private function lineRevenue(float $lineTotal, float $lineVat, bool $pricesIncludeVat): float
+    {
+        return $pricesIncludeVat ? $lineTotal - $lineVat : $lineTotal;
     }
 
     /**
@@ -467,13 +536,12 @@ class OrderService
     {
         $discount = (float) $order->discount_amount;
         $vat = (float) $order->vat_amount;
-        $grossRevenue = (float) $order->total_amount + $discount;
 
         $paymentLedger = $this->financeService->systemLedger($paymentLedgerCode);
         $inventoryAsset = $this->financeService->systemLedger('INV-ASSET');
 
         $lines = [
-            ['ledger_id' => $paymentLedger->id, 'type' => 'credit', 'amount' => $grossRevenue - $discount + $vat, 'cost_center_id' => $costCenterId],
+            ['ledger_id' => $paymentLedger->id, 'type' => 'credit', 'amount' => (float) $order->total_amount, 'cost_center_id' => $costCenterId],
             ['ledger_id' => $inventoryAsset->id, 'type' => 'debit', 'amount' => $cost, 'cost_center_id' => $costCenterId],
         ];
 
@@ -568,19 +636,23 @@ class OrderService
      */
     /**
      * Debtors report's data source — every stakeholder's total order
-     * value (excluding cancelled orders), keyed by stakeholder id. The
+     * value (excluding cancelled orders and POS sales), keyed by
+     * stakeholder id. POS sales are paid at the till (posted to Cash, not
+     * Accounts Receivable — see cancel()'s payment-ledger choice), so they
+     * were never owed and must not show up as debt. The
      * report itself (ReportService::debtors()) subtracts each
      * stakeholder's applied Receipts to get the actual outstanding
      * balance — this method only sums the "billed" side, deliberately
      * not the settled side, since Receipt is a different module's
      * concern (Extensibility Constitution, Rule 2).
      *
-     * @return array<int, float>  stakeholderId => totalOrderValue
+     * @return array<int, float> stakeholderId => totalOrderValue
      */
     public function totalsByStakeholder(): array
     {
         return Order::query()
             ->where('status', '!=', 'cancelled')
+            ->where('source', '!=', 'pos')
             ->whereNotNull('stakeholder_id')
             ->selectRaw('stakeholder_id, sum(total_amount) as total')
             ->groupBy('stakeholder_id')
@@ -671,7 +743,7 @@ class OrderService
      *
      * @param  array<string, mixed>  $data  validated UpdateOrderRequest payload
      *
-     * @throws InvalidOrderTransitionException  if the requested status isn't a valid next step from the order's current status
+     * @throws InvalidOrderTransitionException if the requested status isn't a valid next step from the order's current status
      */
     public function updateStatusOrNotes(Order $order, array $data): Order
     {
@@ -741,7 +813,7 @@ class OrderService
      * ledger reversal, a cancelled order would permanently overstate
      * recognized revenue.
      *
-     * @throws InvalidOrderTransitionException  if the order's current status isn't in CANCELLABLE_STATUSES
+     * @throws InvalidOrderTransitionException if the order's current status isn't in CANCELLABLE_STATUSES
      */
     public function cancel(Order $order): Order
     {
@@ -780,7 +852,7 @@ class OrderService
 
                 $categoryId = $categoryIdsByProduct[$item->product_id] ?? null;
                 $categoryTotals[$categoryId] ??= ['revenue' => 0.0, 'cost' => 0.0];
-                $categoryTotals[$categoryId]['revenue'] += (float) $item->line_total;
+                $categoryTotals[$categoryId]['revenue'] += $this->lineRevenue((float) $item->line_total, (float) $item->vat_amount, (bool) $order->prices_include_vat);
                 $categoryTotals[$categoryId]['cost'] += $lineCost;
             }
 

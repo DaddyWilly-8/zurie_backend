@@ -80,8 +80,8 @@ Writes across modules always go through the other module's Service.
 
 - Tables: `roles`, `permissions`, pivots `role_permissions`, `user_roles`. Models in `Modules/Auth/Models`.
 - **Permissions are seeded, not auto-granted.** `PermissionSeeder` creates keys.
-  `RoleSeeder` then gives the **`admin`** role *every* permission (`sync(Permission::pluck('id'))`).
-  **`super_admin` gets none** in that seeder (it is only a label today).
+  `RoleSeeder` then gives the **`super_admin`** and **`admin`** roles *every* permission (`sync(Permission::pluck('id'))`).
+  **`staff` gets none** in that seeder.
 - Therefore, after you add a new permission key you must re-seed:
   `php artisan db:seed --class=PermissionSeeder && php artisan db:seed --class=RoleSeeder`
   otherwise the route 403s for everybody, including admins.

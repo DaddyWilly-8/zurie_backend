@@ -117,7 +117,7 @@ within it (an admin browsing the storefront never appears as a logged-in custome
 | Fact | Consequence |
 |---|---|
 | The route string must exist as a `permissions.key` row | A typo or unseeded key **403s everyone, silently** — no compile-time link, keep in sync by hand |
-| `RoleSeeder` syncs **every** permission to the `admin` role only (`super_admin` gets none) | After adding a key: re-run `PermissionSeeder` **then** `RoleSeeder` |
+| `RoleSeeder` syncs **every** permission to the `super_admin` and `admin` roles (`staff` gets none) | After adding a key: re-run `PermissionSeeder` **then** `RoleSeeder` |
 | `User::permissionKeys()` sent to the client | **UI convenience only** (hide buttons). The middleware is the real boundary — never skip it because "the frontend hides it" |
 | Privilege-escalation guards | `RoleService::assertCanGrantPermission()` (can't grant what you don't hold), `UserService::assertNotActingOnSelf()` |
 
