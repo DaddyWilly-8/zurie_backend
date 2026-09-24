@@ -84,6 +84,15 @@ Route::post('customer/auth/reset-password', [CustomerAuthController::class, 'res
 Route::middleware('web')->withoutMiddleware(EnsureFrontendRequestsAreStateful::class)->group(function (): void {
     Route::get('customer/auth/google/redirect', [CustomerAuthController::class, 'redirectToGoogle']);
     Route::get('customer/auth/google/callback', [CustomerAuthController::class, 'handleGoogleCallback']);
+
+    // Pre-split paths, kept as aliases: GOOGLE_REDIRECT_URI and the
+    // Authorized redirect URIs in Google Cloud Console were registered
+    // against /api/v1/auth/google/callback before the customer/staff split
+    // renamed it, and Google refuses (or 404s back into) any callback that
+    // doesn't match exactly. Without these, every Google sign-in died on
+    // the way back until both configs were updated by hand.
+    Route::get('auth/google/redirect', [CustomerAuthController::class, 'redirectToGoogle']);
+    Route::get('auth/google/callback', [CustomerAuthController::class, 'handleGoogleCallback']);
 });
 
 Route::middleware('auth:customer')->group(function (): void {
