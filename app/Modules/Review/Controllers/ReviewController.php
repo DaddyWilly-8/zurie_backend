@@ -26,7 +26,10 @@ class ReviewController extends Controller
      */
     public function index(int $productId)
     {
-        return $this->ok(ReviewResource::collection($this->reviewService->approvedForProduct($productId)));
+        $reviews = $this->reviewService->approvedForProduct($productId);
+        $this->reviewService->attachNames($reviews);
+
+        return $this->ok(ReviewResource::collection($reviews));
     }
 
     /**
@@ -53,6 +56,7 @@ class ReviewController extends Controller
         $filters = $request->only(['status']);
 
         $reviews = $this->reviewService->paginateAdmin($filters, $page, $pageSize);
+        $this->reviewService->attachNames($reviews->items());
 
         return $this->paginated(
             ReviewResource::collection($reviews->items()),
@@ -63,6 +67,7 @@ class ReviewController extends Controller
     public function updateStatus(UpdateReviewStatusRequest $request, ProductReview $review)
     {
         $review = $this->reviewService->updateStatus($review, $request->validated()['status']);
+        $this->reviewService->attachNames([$review]);
 
         return $this->ok(new ReviewResource($review));
     }

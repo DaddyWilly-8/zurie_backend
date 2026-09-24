@@ -25,6 +25,22 @@ use Illuminate\Support\Facades\DB;
 class CustomerService
 {
     /**
+     * Batched id => name lookup, for modules that only store customer_id
+     * (e.g. Review).
+     *
+     * @param  array<int, int>  $customerIds
+     * @return array<int, string>
+     */
+    public function namesFor(array $customerIds): array
+    {
+        if (empty($customerIds)) {
+            return [];
+        }
+
+        return Customer::query()->whereIn('id', $customerIds)->pluck('name', 'id')->all();
+    }
+
+    /**
      * Dedupe by phone, DB-unique-indexed, for guests/walk-ins with no
      * user_id. Called by Order's checkout flow — there is intentionally no
      * generic POST /customers; a customer record is only ever created as a
@@ -85,6 +101,7 @@ class CustomerService
      * class dependency on Auth's CustomerAccount. `stakeholders.user_id`
      * (the pre-customer/staff-split link) is deliberately NOT used for
      * this anymore — see CustomerService::findByUserId()'s own
+     *
      * @deprecated note for why it no longer reflects new signups.
      */
     private function withAccountFlag(Builder $query): Builder
