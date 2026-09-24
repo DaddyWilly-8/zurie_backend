@@ -34,8 +34,8 @@ class BackupDatabase extends Command
         $directory = storage_path('app/private/backups');
         File::ensureDirectoryExists($directory);
 
-        $filename = 'backup-' . now()->format('Y-m-d-His') . '.sql';
-        $path = $directory . '/' . $filename;
+        $filename = 'backup-'.now()->format('Y-m-d-His').'.sql';
+        $path = $directory.'/'.$filename;
 
         try {
             $this->dump($path);
@@ -65,7 +65,7 @@ class BackupDatabase extends Command
 
         $handle = fopen($path, 'w');
 
-        fwrite($handle, "-- Backup of `{$database}` — " . now()->toDateTimeString() . "\n");
+        fwrite($handle, "-- Backup of `{$database}` — ".now()->toDateTimeString()."\n");
         fwrite($handle, "SET FOREIGN_KEY_CHECKS=0;\n\n");
 
         foreach ($tables as $table) {
@@ -82,10 +82,11 @@ class BackupDatabase extends Command
 
         fwrite($handle, "-- Table: {$table}\n");
         fwrite($handle, "DROP TABLE IF EXISTS `{$table}`;\n");
-        fwrite($handle, $createSql . ";\n\n");
+        fwrite($handle, $createSql.";\n\n");
 
         $total = DB::table($table)->count();
         $columns = null;
+        $written = 0;
 
         for ($offset = 0; $offset < $total; $offset += self::CHUNK_SIZE) {
             $rows = DB::table($table)->offset($offset)->limit(self::CHUNK_SIZE)->get();
@@ -104,13 +105,18 @@ class BackupDatabase extends Command
                     return $value === null ? 'NULL' : $pdo->quote((string) $value);
                 }, $columns);
 
-                return '(' . implode(', ', $values) . ')';
+                return '('.implode(', ', $values).')';
             })->implode(",\n");
 
             fwrite($handle, "INSERT INTO `{$table}` (`{$columnList}`) VALUES\n{$valueRows};\n");
+            $written += $rows->count();
         }
 
-        fwrite($handle, "\n");
+        // Read back by VerifyBackupRestore, which checks a restore against
+        // what the dump actually contains rather than against the live
+        // database — live row counts move on (sessions, cache, new orders)
+        // between the dump and the check.
+        fwrite($handle, "-- Rows: {$table} {$written}\n\n");
     }
 
     private function rotate(string $directory): void

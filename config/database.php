@@ -21,6 +21,20 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Backup Restore-Check Database
+    |--------------------------------------------------------------------------
+    |
+    | An existing, otherwise unused database that backup:verify-restore may
+    | restore into and then empty. Needed where the DB user can't CREATE
+    | DATABASE (cPanel shared hosting). Leave unset to let the command
+    | create and drop a temporary database of its own.
+    |
+    */
+
+    'backup_verify_database' => env('BACKUP_VERIFY_DATABASE'),
+
+    /*
+    |--------------------------------------------------------------------------
     | Database Connections
     |--------------------------------------------------------------------------
     |

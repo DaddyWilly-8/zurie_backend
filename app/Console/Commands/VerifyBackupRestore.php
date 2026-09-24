@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands;
 
+use App\Modules\Finance\Services\FinanceService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
@@ -14,8 +15,14 @@ use Symfony\Component\Process\Process;
  * a finance system — runs finance:reconcile against the restored copy
  * too, so a restore test also proves the books it recovers are actually
  * trustworthy, not just present. The scratch database is always dropped
- * afterward, success or failure, and this command NEVER touches the live
- * database itself.
+ * (or emptied, see below) afterward, success or failure, and this command
+ * NEVER touches the live database itself.
+ *
+ * Shared hosting (cPanel) doesn't let the app's DB user CREATE DATABASE.
+ * There, create one spare database once in cPanel, give the app's user
+ * all privileges on it, and set BACKUP_VERIFY_DATABASE to its name: the
+ * command then restores into that database and empties it afterward
+ * instead of creating and dropping its own.
  *
  * Intended to run on a schedule (weekly is enough — the backup itself
  * already runs nightly) separately from the backup job, so a corrupt or
@@ -45,14 +52,35 @@ class VerifyBackupRestore extends Command
         $this->info("Verifying: {$latest->getFilename()}");
 
         $liveDatabase = DB::connection()->getDatabaseName();
-        $scratchDatabase = 'restore_verify_'.now()->format('YmdHis');
+        $configuredDatabase = config('database.backup_verify_database');
+        $ownsScratchDatabase = blank($configuredDatabase);
+        $scratchDatabase = $ownsScratchDatabase
+            ? 'restore_verify_'.now()->format('YmdHis')
+            : $configuredDatabase;
+
+        if ($scratchDatabase === $liveDatabase) {
+            $this->error('BACKUP_VERIFY_DATABASE points at the live database — refusing to restore over it.');
+
+            return self::FAILURE;
+        }
+
+        $this->configureScratchConnection($scratchDatabase);
 
         try {
-            $this->createScratchDatabase($scratchDatabase);
+            if ($ownsScratchDatabase) {
+                $this->createScratchDatabase($scratchDatabase);
+            } else {
+                $this->emptyScratchDatabase();
+            }
+
             $this->restoreInto($scratchDatabase, $latest->getPathname());
 
-            $mismatches = $this->compareRowCounts($liveDatabase, $scratchDatabase);
-            $reconcileOk = $this->reconcileScratchDatabase($scratchDatabase);
+            $expectedCounts = $this->rowCountsRecordedIn($latest->getPathname());
+            $mismatches = $expectedCounts !== []
+                ? $this->compareAgainstDump($expectedCounts)
+                // Dumps written before BackupDatabase recorded row counts.
+                : $this->compareRowCounts($liveDatabase, $scratchDatabase);
+            $reconcileOk = $this->reconcileScratchDatabase();
 
             if ($mismatches === [] && $reconcileOk) {
                 $this->info('Restore verified: every table matches and the ledgers reconcile.');
@@ -60,8 +88,8 @@ class VerifyBackupRestore extends Command
                 return self::SUCCESS;
             }
 
-            foreach ($mismatches as [$table, $liveCount, $restoredCount]) {
-                $this->error("Row count mismatch on `{$table}`: live={$liveCount} restored={$restoredCount}");
+            foreach ($mismatches as [$table, $expectedCount, $restoredCount]) {
+                $this->error("Row count mismatch on `{$table}`: expected={$expectedCount} restored={$restoredCount}");
             }
             if (! $reconcileOk) {
                 $this->error('Restored database failed finance:reconcile.');
@@ -77,8 +105,84 @@ class VerifyBackupRestore extends Command
 
             return self::FAILURE;
         } finally {
-            $this->dropScratchDatabase($scratchDatabase);
+            // Cleanup failing (e.g. the scratch database was never created)
+            // must not bury the real result above under a second stack trace.
+            try {
+                $ownsScratchDatabase
+                    ? $this->dropScratchDatabase($scratchDatabase)
+                    : $this->emptyScratchDatabase();
+            } catch (\Throwable $e) {
+                $this->warn("Could not clean up scratch database `{$scratchDatabase}`: {$e->getMessage()}");
+            } finally {
+                DB::purge('restore_check');
+            }
         }
+    }
+
+    private function configureScratchConnection(string $database): void
+    {
+        config(['database.connections.restore_check' => array_merge(
+            config('database.connections.'.config('database.default')),
+            ['database' => $database],
+        )]);
+        DB::purge('restore_check');
+    }
+
+    private function emptyScratchDatabase(): void
+    {
+        $scratch = DB::connection('restore_check');
+        $tables = collect($scratch->select('SHOW TABLES'))->map(fn ($row) => array_values((array) $row)[0]);
+
+        $scratch->statement('SET FOREIGN_KEY_CHECKS=0');
+        foreach ($tables as $table) {
+            $scratch->statement("DROP TABLE IF EXISTS `{$table}`");
+        }
+        $scratch->statement('SET FOREIGN_KEY_CHECKS=1');
+    }
+
+    /**
+     * The "-- Rows: <table> <count>" lines BackupDatabase writes after each
+     * table's data.
+     *
+     * @return array<string, int>
+     */
+    private function rowCountsRecordedIn(string $dumpPath): array
+    {
+        $counts = [];
+        $handle = fopen($dumpPath, 'r');
+
+        while (($line = fgets($handle)) !== false) {
+            if (preg_match('/^-- Rows: (\S+) (\d+)$/', rtrim($line), $match)) {
+                $counts[$match[1]] = (int) $match[2];
+            }
+        }
+        fclose($handle);
+
+        return $counts;
+    }
+
+    /**
+     * @param  array<string, int>  $expectedCounts
+     * @return array<int, array{0: string, 1: int, 2: int|string}>
+     */
+    private function compareAgainstDump(array $expectedCounts): array
+    {
+        $scratch = DB::connection('restore_check');
+        $mismatches = [];
+
+        foreach ($expectedCounts as $table => $expectedCount) {
+            try {
+                $restoredCount = (int) $scratch->table($table)->count();
+            } catch (\Throwable) {
+                $restoredCount = 'missing';
+            }
+
+            if ($restoredCount !== $expectedCount) {
+                $mismatches[] = [$table, $expectedCount, $restoredCount];
+            }
+        }
+
+        return $mismatches;
     }
 
     private function createScratchDatabase(string $database): void
@@ -143,15 +247,10 @@ class VerifyBackupRestore extends Command
         return $mismatches;
     }
 
-    private function reconcileScratchDatabase(string $scratchDatabase): bool
+    private function reconcileScratchDatabase(): bool
     {
-        config(['database.connections.restore_check' => array_merge(
-            config('database.connections.mysql'),
-            ['database' => $scratchDatabase],
-        )]);
-
-        /** @var \App\Modules\Finance\Services\FinanceService $finance */
-        $finance = app(\App\Modules\Finance\Services\FinanceService::class);
+        /** @var FinanceService $finance */
+        $finance = app(FinanceService::class);
 
         // Temporarily point the default connection at the scratch
         // database for this one call — FinanceService has no
@@ -160,13 +259,11 @@ class VerifyBackupRestore extends Command
         // command's sake.
         $originalDefault = config('database.default');
         config(['database.default' => 'restore_check']);
-        DB::purge('restore_check');
 
         try {
             return $finance->reconcileLedgers() === [];
         } finally {
             config(['database.default' => $originalDefault]);
-            DB::purge('restore_check');
         }
     }
 }
