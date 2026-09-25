@@ -8,10 +8,13 @@ use App\Modules\Finance\Models\JournalEntry;
 use App\Modules\Finance\Models\JournalEntryLine;
 use App\Modules\Finance\Models\Ledger;
 use App\Modules\Finance\Models\LedgerGroup;
+use App\Modules\Supplier\Models\Supplier;
 use App\Support\Money;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 
 class FinanceService
 {
@@ -65,7 +68,7 @@ class FinanceService
     {
         return Ledger::firstOrCreate(
             ['ledger_group_id' => $group->id, 'name' => $name],
-            ['code' => sprintf('%s-%s', $group->code, \Illuminate\Support\Str::slug($name))]
+            ['code' => sprintf('%s-%s', $group->code, Str::slug($name))]
         );
     }
 
@@ -79,7 +82,7 @@ class FinanceService
      *
      * @param  array<int, array{ledger_id: int, type: 'debit'|'credit', amount: float, cost_center_id?: int|null}>  $lines
      *
-     * @throws UnbalancedJournalEntryException  if debits != credits
+     * @throws UnbalancedJournalEntryException if debits != credits
      */
     public function postEntry(
         array $lines,
@@ -134,6 +137,21 @@ class FinanceService
         // lines can leave a caller's total legitimately one cent short or
         // over after each line rounds to its own nearest cent.
         if (abs($totalDebits->cents() - $totalCredits->cents()) > 1) {
+            // Never reachable from valid client input (see this method's
+            // own docblock) — always a caller-side bug assembling lines.
+            // Logged with full context here specifically because the
+            // caller (checkout, a GRN receive, a payment) is what a
+            // support ticket will actually be about, and the 500 response
+            // alone doesn't carry which order/purchase/receipt triggered
+            // a broken posting.
+            Log::error('Unbalanced journal entry rejected', [
+                'reference_type' => $referenceType,
+                'reference_id' => $referenceId,
+                'narration' => $narration,
+                'total_debits' => $totalDebits->toFloat(),
+                'total_credits' => $totalCredits->toFloat(),
+            ]);
+
             throw new UnbalancedJournalEntryException($totalDebits->toFloat(), $totalCredits->toFloat());
         }
 
@@ -141,7 +159,7 @@ class FinanceService
         // own line-storage and applyToLedgerBalance() take Money too now,
         // so nothing downstream reintroduces the exact amount as a float.
 
-        return DB::transaction(function () use ($lines, $narration, $referenceType, $referenceId, $createdBy, $date, $currencyId, $exchangeRate) {
+        $entry = DB::transaction(function () use ($lines, $narration, $referenceType, $referenceId, $createdBy, $date, $currencyId, $exchangeRate) {
             $this->lockLedgersInOrder(array_column($lines, 'ledger_id'));
 
             // Defaults to the base currency at rate 1.0 when the caller
@@ -193,6 +211,31 @@ class FinanceService
 
             return $entry->load('lines', 'costCenters');
         });
+
+        $this->logPostedEntry($entry, $lines);
+
+        return $entry;
+    }
+
+    /**
+     * Structured trace for every journal entry actually posted — the
+     * single point every money-moving flow (checkout, GRN receive,
+     * payments/receipts/vouchers) passes through, so a support question
+     * ("what happened to order #1234's ledger postings?") can be
+     * answered by grepping one log line instead of reconstructing it from
+     * the journal_entries table by hand. Called from postEntry() itself
+     * so no caller can forget to log its own posting.
+     */
+    private function logPostedEntry(JournalEntry $entry, array $lines): void
+    {
+        Log::info('Journal entry posted', [
+            'entry_id' => $entry->id,
+            'reference_type' => $entry->reference_type,
+            'reference_id' => $entry->reference_id,
+            'narration' => $entry->narration,
+            'line_count' => count($lines),
+            'ledger_ids' => array_column($lines, 'ledger_id'),
+        ]);
     }
 
     /**
@@ -267,8 +310,8 @@ class FinanceService
      */
     public function reconcileLedgers(bool $fix = false): array
     {
-        $sums = \App\Modules\Finance\Models\JournalEntryLine::query()
-            ->selectRaw("ledger_id, type, SUM(amount) as total")
+        $sums = JournalEntryLine::query()
+            ->selectRaw('ledger_id, type, SUM(amount) as total')
             ->groupBy('ledger_id', 'type')
             ->get()
             ->groupBy('ledger_id');
@@ -481,12 +524,12 @@ class FinanceService
      * same physical row post-Phase-C, so this id is directly usable as a
      * stakeholder id by the caller).
      *
-     * @return array<int, float>  supplierId => currentBalance
+     * @return array<int, float> supplierId => currentBalance
      */
     public function payableBalancesBySupplier(): array
     {
         return Ledger::query()
-            ->where('reference_type', \App\Modules\Supplier\Models\Supplier::class)
+            ->where('reference_type', Supplier::class)
             ->pluck('current_balance', 'reference_id')
             ->map(fn ($balance) => (float) $balance)
             ->all();

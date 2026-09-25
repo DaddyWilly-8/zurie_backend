@@ -2,6 +2,8 @@
 
 use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schedule;
 
 Artisan::command('inspire', function () {
@@ -33,10 +35,20 @@ Schedule::command('finance:reconcile')
     ->dailyAt('00:30')
     ->timezone(config('app.timezone'))
     ->withoutOverlapping()
-    ->onFailure(fn () => \Illuminate\Support\Facades\Log::critical('finance:reconcile found ledger drift — run it manually to inspect.'));
+    ->onFailure(fn () => Log::critical('finance:reconcile found ledger drift — run it manually to inspect.'));
+
+// Same safety net as finance:reconcile above, for stock instead of
+// money — recomputes every (product, outlet) quantity from
+// inventory_movements and exits non-zero on drift (see
+// Inventory\Console\ReconcileStockCommand). Read-only, same reasoning.
+Schedule::command('inventory:reconcile')
+    ->dailyAt('00:45')
+    ->timezone(config('app.timezone'))
+    ->withoutOverlapping()
+    ->onFailure(fn () => Log::critical('inventory:reconcile found stock drift — run it manually to inspect.'));
 
 // Idempotency keys only need to outlive realistic client retries.
-Schedule::call(fn () => \Illuminate\Support\Facades\DB::table('idempotency_keys')
+Schedule::call(fn () => DB::table('idempotency_keys')
     ->where('created_at', '<', now()->subDays(2))
     ->delete())
     ->name('prune-idempotency-keys')
@@ -54,4 +66,4 @@ Schedule::command('backup:verify-restore')
     ->weeklyOn(0, '02:00')
     ->timezone(config('app.timezone'))
     ->withoutOverlapping()
-    ->onFailure(fn () => \Illuminate\Support\Facades\Log::critical('backup:verify-restore failed — the latest backup may not be restorable. Investigate immediately.'));
+    ->onFailure(fn () => Log::critical('backup:verify-restore failed — the latest backup may not be restorable. Investigate immediately.'));
