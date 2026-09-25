@@ -1,0 +1,28 @@
+name: Dependency Security Audit
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    # Dependencies gain new advisories over time even with no code
+    # change — a weekly check catches that without waiting for the next PR.
+    - cron: "0 6 * * 1"
+
+jobs:
+  composer-audit:
+    name: composer audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.4"
+      - run: composer install --no-interaction --prefer-dist --no-progress
+      # composer audit exits non-zero on any advisory by default — no
+      # separate severity flag the way npm has --audit-level, since
+      # Composer's advisory feed doesn't classify by CVSS score the same
+      # way. A false-positive/accepted-risk advisory would need an
+      # explicit --ignore-platform-req or audit config entry to unblock,
+      # not a severity threshold.
+      - run: composer audit
