@@ -33,15 +33,30 @@ fi
 log "Using PHP: $(command -v "$PHP_BIN") ($($PHP_BIN -v | head -1))"
 
 # --- Locate Composer ---------------------------------------------------
-# Shared hosting often only has composer.phar sitting in the project root,
-# not a global `composer` on PATH.
-if command -v composer >/dev/null 2>&1; then
+# cPanel's Composer UI creates an alias (`composer84='php84 ...composer'`)
+# that only exists in interactive shells — useless to cron/CI. The real
+# file is at ~/composer.phar on this box, and it must be run through PHP.
+# We look, in order:
+#   1. $COMPOSER_BIN if the caller set it explicitly
+#   2. a `composer` on PATH (system-wide installs)
+#   3. $HOME/bin/composer — a wrapper script if one was created
+#   4. ~/composer.phar — run through $PHP_BIN
+#   5. ./composer.phar — project-local fallback
+COMPOSER_CMD=()
+if [ -n "${COMPOSER_BIN:-}" ] && [ -x "$COMPOSER_BIN" ]; then
+  COMPOSER_CMD=("$COMPOSER_BIN")
+elif command -v composer >/dev/null 2>&1; then
   COMPOSER_CMD=(composer)
+elif [ -x "$HOME/bin/composer" ]; then
+  COMPOSER_CMD=("$HOME/bin/composer")
+elif [ -f "$HOME/composer.phar" ]; then
+  COMPOSER_CMD=("$PHP_BIN" "$HOME/composer.phar")
 elif [ -f composer.phar ]; then
   COMPOSER_CMD=("$PHP_BIN" composer.phar)
 else
-  fail "no composer found (tried \`composer\` on PATH and ./composer.phar)."
+  fail "no composer found (tried \$COMPOSER_BIN, PATH, \$HOME/bin/composer, \$HOME/composer.phar, ./composer.phar). Set COMPOSER_BIN explicitly."
 fi
+log "Using composer: ${COMPOSER_CMD[*]}"
 
 # --- Pull latest -------------------------------------------------------
 log "Fetching latest main..."
