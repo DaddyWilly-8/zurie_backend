@@ -2,6 +2,7 @@
 
 namespace App\Modules\Inventory\Providers;
 
+use App\Modules\Inventory\Console\ReconcileStockCommand;
 use App\Modules\Inventory\Listeners\CreateInventoryRecord;
 use App\Modules\Inventory\Listeners\DeleteInventoryRecord;
 use App\Modules\Product\Events\ProductCreated;
@@ -23,5 +24,9 @@ class InventoryModuleServiceProvider extends ServiceProvider
         // registered explicitly here rather than relying on discovery.
         Event::listen(ProductCreated::class, CreateInventoryRecord::class);
         Event::listen(ProductDeleted::class, DeleteInventoryRecord::class);
+
+        if ($this->app->runningInConsole()) {
+            $this->commands([ReconcileStockCommand::class]);
+        }
     }
 }

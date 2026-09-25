@@ -592,4 +592,49 @@ class InventoryService
             ])
             ->all();
     }
+
+    /**
+     * Safety net for `inventory.quantity`, same role as
+     * FinanceService::reconcileLedgers() plays for ledger balances:
+     * every (product, outlet) row's quantity is recomputed from
+     * scratch by summing its `inventory_movements` rows (signed deltas,
+     * always starting from provisionForProduct()'s initial 0 — see that
+     * method and the movements table's own migration) and compared
+     * against the stored value. Every quantity-changing code path in
+     * this Service (decrementForOrder, restockForOrder, receivePurchase,
+     * reversePurchaseReceipt, the transfer pair, and update()'s own
+     * "adjustment" entry) already writes a movement row, so a real
+     * discrepancy here means either a bug in one of those paths or a
+     * direct DB write that bypassed this Service entirely — never a
+     * false positive from an expected, allowed change.
+     *
+     * @return array<int, array{productId: int, outletId: int, stored: int, expected: int, difference: int}>
+     */
+    public function reconcileStock(): array
+    {
+        $sums = InventoryMovement::query()
+            ->selectRaw('product_id, sales_outlet_id, SUM(quantity) as total')
+            ->groupBy('product_id', 'sales_outlet_id')
+            ->get()
+            ->keyBy(fn ($row) => "{$row->product_id}:{$row->sales_outlet_id}");
+
+        $drift = [];
+
+        foreach (Inventory::all(['product_id', 'sales_outlet_id', 'quantity']) as $inventory) {
+            $key = "{$inventory->product_id}:{$inventory->sales_outlet_id}";
+            $expected = (int) ($sums[$key]->total ?? 0);
+
+            if ($expected !== $inventory->quantity) {
+                $drift[] = [
+                    'productId' => $inventory->product_id,
+                    'outletId' => $inventory->sales_outlet_id,
+                    'stored' => $inventory->quantity,
+                    'expected' => $expected,
+                    'difference' => $inventory->quantity - $expected,
+                ];
+            }
+        }
+
+        return $drift;
+    }
 }
