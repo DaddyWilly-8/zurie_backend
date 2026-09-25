@@ -1,0 +1,68 @@
+name: Deploy (backend, code-only)
+
+# Auto-deploy the live API after CI passes on main. It SSHes into the cPanel
+# host and runs ./deploy.sh with AUTO_MIGRATE=0 — a CODE-ONLY deploy: it
+# pulls, installs (--no-dev), and rebuilds caches, but NEVER touches the
+# database. If a merged change needs a migration, the deploy log warns and
+# you run `ea-php84 artisan migrate --force` on the server yourself. This is
+# deliberate: auto-applying schema changes to a live DB on every push is how
+# accidents happen.
+#
+# Fires only for a *successful* CI run on main, or by manual dispatch.
+#
+# One-time setup (see docs/RUNBOOK.md → "Automatic deploy"): add four repo
+# secrets — DEPLOY_SSH_HOST, DEPLOY_SSH_PORT, DEPLOY_SSH_USER,
+# DEPLOY_SSH_KEY — and authorize the matching public key on the server.
+# Until DEPLOY_SSH_HOST is set the job no-ops with a note instead of failing.
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-backend
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: SSH deploy
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    env:
+      HOST: ${{ secrets.DEPLOY_SSH_HOST }}
+      PORT: ${{ secrets.DEPLOY_SSH_PORT }}
+      USER: ${{ secrets.DEPLOY_SSH_USER }}
+      APP_DIR: ${{ vars.DEPLOY_APP_DIR || '~/api.zurie.co.tz_backend' }}
+    steps:
+      - name: Check deploy is configured
+        id: cfg
+        run: |
+          if [ -z "$HOST" ]; then
+            echo "::notice::Deploy secrets not set yet — skipping. See docs/RUNBOOK.md → Automatic deploy."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Deploy over SSH (code only, no migrations)
+        if: steps.cfg.outputs.ready == 'true'
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          PORT="${PORT:-22}"
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -p "$PORT" -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+          ssh -i ~/.ssh/id_deploy -p "$PORT" \
+            -o StrictHostKeyChecking=accept-new \
+            "$USER@$HOST" \
+            "bash -lc 'cd $APP_DIR && chmod +x deploy.sh && AUTO_MIGRATE=0 ./deploy.sh'"
+
+      - name: Clean up key
+        if: always()
+        run: rm -f ~/.ssh/id_deploy

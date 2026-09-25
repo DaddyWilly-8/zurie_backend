@@ -60,6 +60,41 @@ codebase has one that's safe to run against live data (see
 [`CLAUDE.md`](../CLAUDE.md) §6 for the ledger/stock invariants that make some
 migrations one-way in practice).
 
+### Automatic deploy (push to main → live), code-only
+
+`.github/workflows/deploy.yml` deploys the API automatically after the CI
+test suite passes on `main`: it SSHes into the server and runs
+`AUTO_MIGRATE=0 ./deploy.sh` — a **code-only** deploy that pulls, installs
+(`--no-dev`), and rebuilds caches but **never touches the database**. It
+runs only for a **green** CI run; you can also trigger it from **Actions →
+Deploy (backend, code-only) → Run workflow**.
+
+**Migrations stay manual, on purpose.** When a merged change adds a
+migration, the deploy log prints a `WARNING: pending database migrations`
+line — run it yourself when you're ready:
+
+```bash
+ea-php84 artisan migrate --force
+```
+
+Deploy the schema *before or right after* the code lands, depending on
+whether the change is backwards-compatible. A hand-run `./deploy.sh` (no
+`AUTO_MIGRATE=0`) still migrates as part of the deploy, for when you want the
+whole thing in one step.
+
+One-time setup — the same four secrets as the storefront repo (add them to
+**this** repo too, under Settings → Secrets and variables → Actions):
+
+1. Reuse the deploy key you authorized on the server for the storefront (or
+   authorize a second one).
+2. Add repo secrets `DEPLOY_SSH_HOST`, `DEPLOY_SSH_PORT`, `DEPLOY_SSH_USER`,
+   `DEPLOY_SSH_KEY`. Optional var `DEPLOY_APP_DIR` if the checkout isn't at
+   `~/api.zurie.co.tz_backend`.
+
+Until `DEPLOY_SSH_HOST` is set, the deploy job just logs a note and passes,
+so merging this is safe before setup. If the host firewalls SSH by IP, keep
+deploying with `./deploy.sh` by hand.
+
 ## Health check
 
 ```
