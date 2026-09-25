@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  tests:
+    name: Backend test suite
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ALLOW_EMPTY_PASSWORD: yes
+          MYSQL_DATABASE: zurie_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.4"
+          extensions: mbstring, pdo_mysql, bcmath, intl
+          coverage: none
+
+      - name: Install dependencies
+        # Dev deps ARE needed here — phpunit lives in require-dev.
+        run: composer install --no-interaction --prefer-dist
+
+      - name: Configure .env
+        run: |
+          cp .env.example .env
+          php artisan key:generate
+          sed -i "s/^DB_HOST=.*/DB_HOST=127.0.0.1/" .env
+          sed -i "s/^DB_DATABASE=.*/DB_DATABASE=zurie_test/" .env
+          sed -i "s/^DB_USERNAME=.*/DB_USERNAME=root/" .env
+          sed -i "s/^DB_PASSWORD=.*/DB_PASSWORD=/" .env
+
+      - name: Run tests
+        # phpunit.xml pins the test DB to zurie_test on the mysql connection
+        # and forces array cache / sync queue, so this matches the service
+        # above with no extra config.
+        run: php artisan test

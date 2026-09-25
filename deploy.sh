@@ -56,8 +56,25 @@ log "Installing PHP dependencies (production, no dev)..."
 # Runs before the cache rebuild below so a failure here (the step most
 # likely to fail) stops before any cache references the new code with an
 # unmigrated database underneath it.
-log "Running database migrations..."
-"$PHP_BIN" artisan migrate --force
+#
+# AUTO_MIGRATE=0 turns this into a code-only deploy: the schema is left
+# completely untouched and pending migrations are only *reported*. The
+# automatic deploy workflow uses this, so no push ever alters the live
+# database unattended — you run `migrate --force` yourself when a change
+# needs it. A hand-run `./deploy.sh` keeps AUTO_MIGRATE=1 (the default) and
+# migrates as before.
+if [ "${AUTO_MIGRATE:-1}" = "1" ]; then
+  log "Running database migrations..."
+  "$PHP_BIN" artisan migrate --force
+else
+  log "AUTO_MIGRATE=0 — skipping migrations (code-only deploy)."
+  if "$PHP_BIN" artisan migrate:status 2>/dev/null | grep -qi "pending"; then
+    log "WARNING: pending database migrations were NOT applied."
+    log "WARNING: run \`$PHP_BIN artisan migrate --force\` on the server — the API may error until you do."
+  else
+    log "No pending migrations."
+  fi
+fi
 
 # --- Storage symlink (idempotent — safe if it already exists) -----------
 "$PHP_BIN" artisan storage:link >/dev/null 2>&1 || true
