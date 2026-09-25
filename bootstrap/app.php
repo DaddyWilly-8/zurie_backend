@@ -8,8 +8,10 @@ use App\Modules\Coupon\Exceptions\InvalidCouponException;
 use App\Modules\Finance\Exceptions\UnbalancedJournalEntryException;
 use App\Modules\Inventory\Exceptions\InsufficientStockException;
 use App\Modules\Order\Exceptions\InvalidOrderTransitionException;
+use App\Support\Http\EnsureIdempotency;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Auth\AuthenticationException;
+use Illuminate\Auth\Middleware\Authenticate;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Application;
@@ -17,6 +19,7 @@ use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
 use Illuminate\Http\Request;
 use Illuminate\Validation\ValidationException;
+use Sentry\Laravel\Integration;
 use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
 
 return Application::configure(basePath: dirname(__DIR__))
@@ -37,8 +40,23 @@ return Application::configure(basePath: dirname(__DIR__))
 
         $middleware->alias([
             'permission' => EnsurePermission::class,
-            'idempotent' => \App\Support\Http\EnsureIdempotency::class,
+            'idempotent' => EnsureIdempotency::class,
         ]);
+
+        // This whole app is a JSON API with no login-page route — but
+        // Laravel's default Authenticate middleware only skips its
+        // redirect-to-login behavior when the request "expects JSON"
+        // (an Accept: application/json header, or an XHR/pjax request).
+        // Any other unauthenticated request — a plain curl call, a bot, a
+        // misconfigured client, or an attacker's authorization sweep —
+        // falls into the redirect path instead, which tries to build a
+        // URL for a named "login" route that doesn't exist here and
+        // throws RouteNotFoundException: a raw 500 instead of a clean
+        // 401. Forcing this to null makes every unauthenticated request,
+        // regardless of headers, always throw AuthenticationException —
+        // already mapped to the standard { success: false, message:
+        // "Unauthenticated." } 401 below.
+        Authenticate::redirectUsing(fn () => null);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         // Error monitoring — a no-op until SENTRY_LARAVEL_DSN is set (see
@@ -50,7 +68,7 @@ return Application::configure(basePath: dirname(__DIR__))
         // own JSON-envelope render() below still runs; reporting and
         // rendering are independent), so a real production incident is
         // visible somewhere other than a log file nobody's watching.
-        \Sentry\Laravel\Integration::handles($exceptions);
+        Integration::handles($exceptions);
 
         $exceptions->shouldRenderJsonWhen(
             fn (Request $request) => $request->is('api/*'),
