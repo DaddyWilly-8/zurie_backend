@@ -821,6 +821,113 @@ class OrderService
     }
 
     /**
+     * POST /admin/orders/{order}/complete — fast-forwards a non-terminal
+     * order through every remaining step in ALLOWED_STATUS_TRANSITIONS
+     * straight to `delivered`, one admin click instead of walking
+     * new→confirmed→processing→ready_for_delivery→delivered by hand.
+     * Each intermediate status still gets its own activity log line and
+     * customer notification (via updateStatusOrNotes()) — this doesn't
+     * weaken the auditable-pipeline design, it just removes the need for
+     * an admin to click through it one stage at a time.
+     *
+     * @throws InvalidOrderTransitionException if the order is already terminal (`delivered`/`cancelled`)
+     */
+    public function advanceToDelivered(Order $order): Order
+    {
+        $allowedNext = self::ALLOWED_STATUS_TRANSITIONS[$order->status] ?? [];
+
+        if ($allowedNext === []) {
+            throw new InvalidOrderTransitionException(
+                "Order {$order->order_number}'s status ({$order->status}) is final and cannot be changed further."
+            );
+        }
+
+        while (($next = self::ALLOWED_STATUS_TRANSITIONS[$order->status][0] ?? null) !== null) {
+            $order = $this->updateStatusOrNotes($order, ['status' => $next]);
+        }
+
+        return $order;
+    }
+
+    /**
+     * POST /admin/orders/{order}/price-adjustment — for a negotiated
+     * (phone/WhatsApp) discount applied after checkout, e.g. the customer
+     * agreed a lower price than the site's listed total. checkout()'s own
+     * total_amount is still authoritative at sale time; this only ever
+     * lowers it further, same direction as a coupon, and is recorded the
+     * same way: a Sales Discounts (contra-revenue) line, never by editing
+     * or re-posting the original Sale entry. The VAT portion of the cut is
+     * split out proportionally (VAT was charged on the original total, so
+     * a lower total owes less VAT too) and reduces VAT Output/the VAT
+     * ledger's output total to match — see postSaleToLedger()'s docblock
+     * for why VAT is credited there as a liability, not revenue.
+     *
+     * @throws InvalidOrderTransitionException if the order is terminal (`delivered`/`cancelled`) or the new amount isn't a reduction
+     */
+    public function adjustPrice(Order $order, float $newTotalAmount, string $reason): Order
+    {
+        return DB::transaction(function () use ($order, $newTotalAmount, $reason) {
+            if (in_array($order->status, ['delivered', 'cancelled'], true)) {
+                throw new InvalidOrderTransitionException(
+                    "Order {$order->order_number}'s status ({$order->status}) is final — its price can no longer be adjusted."
+                );
+            }
+
+            $currentTotal = (float) $order->total_amount;
+
+            if ($newTotalAmount <= 0 || $newTotalAmount >= $currentTotal) {
+                throw new InvalidOrderTransitionException(
+                    "The new amount must be lower than the order's current total (" . number_format($currentTotal, 2) . ').'
+                );
+            }
+
+            $reduction = round($currentTotal - $newTotalAmount, 2);
+            $vatRatio = $currentTotal > 0 ? ((float) $order->vat_amount / $currentTotal) : 0.0;
+            $vatReduction = round($reduction * $vatRatio, 2);
+            $revenueDiscount = round($reduction - $vatReduction, 2);
+
+            $order->update([
+                'total_amount' => $newTotalAmount,
+                'discount_amount' => (float) $order->discount_amount + $reduction,
+                'vat_amount' => max(0.0, (float) $order->vat_amount - $vatReduction),
+            ]);
+
+            $paymentLedgerCode = $order->source === 'pos' ? 'CASH' : 'AR';
+            $outlet = $order->outlet_id !== null ? $this->outletService->findOrFail($order->outlet_id) : null;
+
+            $paymentLedger = $this->financeService->systemLedger($paymentLedgerCode);
+            $lines = [
+                ['ledger_id' => $paymentLedger->id, 'type' => 'credit', 'amount' => $reduction, 'cost_center_id' => $outlet?->cost_center_id],
+            ];
+
+            if ($revenueDiscount > 0) {
+                $salesDiscounts = $this->financeService->systemLedger('SALES-DISC');
+                $lines[] = ['ledger_id' => $salesDiscounts->id, 'type' => 'debit', 'amount' => $revenueDiscount, 'cost_center_id' => $outlet?->cost_center_id];
+            }
+
+            if ($vatReduction > 0) {
+                $vatOutput = $this->financeService->systemLedger('VAT-OUT');
+                $lines[] = ['ledger_id' => $vatOutput->id, 'type' => 'debit', 'amount' => $vatReduction, 'cost_center_id' => $outlet?->cost_center_id];
+                $this->vatService->record($order, 'output', -$vatReduction);
+            }
+
+            $this->financeService->postEntry(
+                $lines,
+                narration: "Order {$order->order_number} price adjustment: {$reason}",
+                referenceType: Order::class,
+                referenceId: $order->id,
+            );
+
+            activity('order')
+                ->performedOn($order)
+                ->event('updated')
+                ->log("Order {$order->order_number} price adjusted from " . number_format($currentTotal, 2) . ' to ' . number_format($newTotalAmount, 2) . " ({$reason})");
+
+            return $order->fresh()->load('items');
+        });
+    }
+
+    /**
      * Only fires for a registered customer with a linked CustomerAccount
      * — a guest order, or one whose stakeholder never signed up, has no
      * account to notify. Best-effort: never blocks the status update

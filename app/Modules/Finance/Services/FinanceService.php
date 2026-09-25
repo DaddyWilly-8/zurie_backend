@@ -131,14 +131,16 @@ class FinanceService
             }
         }
 
-        // One cent of slack remains here deliberately — not float
-        // tolerance (there is none left, the sums above are exact), but a
-        // genuine business tolerance: VAT-percentage math on independent
-        // lines can leave a caller's total legitimately one cent short or
-        // over after each line rounds to its own nearest cent.
-        if (abs($totalDebits->cents() - $totalCredits->cents()) > 1) {
-            // Never reachable from valid client input (see this method's
-            // own docblock) — always a caller-side bug assembling lines.
+        // One cent of slack is tolerated here — not float tolerance (there
+        // is none left, the sums above are exact), but a genuine business
+        // allowance: VAT-percentage math on independent lines can leave a
+        // caller's total legitimately one cent short or over after each
+        // line rounds to its own nearest cent. Anything past that is
+        // always a caller-side bug, never reachable from valid client
+        // input (see this method's own docblock).
+        $diffCents = $totalDebits->cents() - $totalCredits->cents();
+
+        if (abs($diffCents) > 1) {
             // Logged with full context here specifically because the
             // caller (checkout, a GRN receive, a payment) is what a
             // support ticket will actually be about, and the 500 response
@@ -153,6 +155,52 @@ class FinanceService
             ]);
 
             throw new UnbalancedJournalEntryException($totalDebits->toFloat(), $totalCredits->toFloat());
+        }
+
+        // A 1-cent gap must never actually reach ledgers.current_balance —
+        // "tolerated" means absorbed into the entry itself so what's
+        // written is always exactly balanced, not that a real, permanent
+        // one-cent mismatch is allowed into the books. Left unresolved,
+        // that cent silently breaks Assets = Liabilities + Equity in
+        // balanceSheet() (confirmed live: a single 1-cent-off posting
+        // flips isBalanced from true to false) and compounds forever,
+        // since current_balance is a running total nothing ever
+        // recomputes from scratch. Absorbed into the last line on
+        // whichever side is short, the same side callers already leave
+        // any VAT-split remainder on (see OrderService::vatPerLine()).
+        if ($diffCents !== 0) {
+            $shortType = $diffCents > 0 ? 'credit' : 'debit';
+            $gap = Money::fromCents(abs($diffCents));
+            $absorbed = false;
+
+            for ($i = count($lines) - 1; $i >= 0; $i--) {
+                if ($lines[$i]['type'] === $shortType) {
+                    $lines[$i]['amount'] = $lines[$i]['amount']->add($gap);
+                    $absorbed = true;
+                    break;
+                }
+            }
+
+            if (! $absorbed) {
+                // No line on the short side to absorb into — e.g. every
+                // line is a debit — can't be balanced by adjustment at
+                // all, so this is exactly as invalid as a >1-cent gap.
+                Log::error('Unbalanced journal entry rejected (no line to absorb rounding gap)', [
+                    'reference_type' => $referenceType,
+                    'reference_id' => $referenceId,
+                    'narration' => $narration,
+                    'total_debits' => $totalDebits->toFloat(),
+                    'total_credits' => $totalCredits->toFloat(),
+                ]);
+
+                throw new UnbalancedJournalEntryException($totalDebits->toFloat(), $totalCredits->toFloat());
+            }
+
+            if ($shortType === 'credit') {
+                $totalCredits = $totalCredits->add($gap);
+            } else {
+                $totalDebits = $totalDebits->add($gap);
+            }
         }
 
         // Lines carry Money internally for the check above; postEntry()'s
@@ -592,12 +640,22 @@ class FinanceService
 
         foreach ($ledgers as $ledger) {
             $nature = $ledger->group->nature;
-            // applyToLedgerBalance() already stores current_balance in
-            // "normal direction positive" form for the ledger's own
-            // nature (contra flip included at write time) — the same
-            // fact trialBalance() relies on. No re-derivation or sign
-            // flip needed here; using the raw value directly is correct.
+            // applyToLedgerBalance() stores current_balance positive in
+            // the ledger's OWN normal direction — already contra-flipped
+            // for a contra ledger (e.g. Sales Discounts, a contra-income
+            // ledger, is stored debit-positive, the opposite of a normal
+            // income ledger's credit-positive). That's correct for
+            // trialBalance()'s debit/credit columns, but combining it
+            // into a single nature-wide total (this method's whole job)
+            // needs the opposite correction: a contra ledger's stored
+            // value must be negated before adding it alongside its
+            // non-contra siblings, or it silently gets counted with the
+            // wrong sign. Found via a real "Assets != Liabilities +
+            // Equity" report bug — Sales Discounts (contra-income, a
+            // reduction of income) was being added to net income instead
+            // of subtracted, a swing of 2x its balance.
             $balance = Money::fromDecimal($ledger->current_balance);
+            $signedBalance = $ledger->is_contra ? $balance->negate() : $balance;
 
             $row = [
                 'ledgerId' => $ledger->id,
@@ -608,11 +666,11 @@ class FinanceService
 
             if (in_array($nature, ['asset', 'liability', 'equity'], true)) {
                 $buckets[$nature][$ledger->group->name][] = $row;
-                $totals[$nature] = $totals[$nature]->add($balance);
+                $totals[$nature] = $totals[$nature]->add($signedBalance);
             } elseif ($nature === 'income') {
-                $netIncome = $netIncome->add($balance);
+                $netIncome = $netIncome->add($signedBalance);
             } elseif ($nature === 'expense') {
-                $netIncome = $netIncome->subtract($balance);
+                $netIncome = $netIncome->subtract($signedBalance);
             }
         }
 

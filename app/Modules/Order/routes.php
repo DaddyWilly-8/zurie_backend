@@ -27,4 +27,12 @@ Route::middleware('auth:sanctum')->group(function (): void {
     // key for now (per project decision) — revisit if cancellation ever
     // needs to be grantable independently of routine status updates.
     Route::post('admin/orders/{order}/cancel', [OrderController::class, 'cancel'])->middleware('permission:order_update');
+
+    // One-click fast-forward to `delivered` — see OrderController::complete()
+    // and OrderService::advanceToDelivered()'s docblocks.
+    Route::post('admin/orders/{order}/complete', [OrderController::class, 'complete'])->middleware('permission:order_update');
+
+    // Negotiated post-checkout discount — see OrderController::adjustPrice()
+    // and OrderService::adjustPrice()'s docblocks.
+    Route::post('admin/orders/{order}/price-adjustment', [OrderController::class, 'adjustPrice'])->middleware('permission:order_update');
 });

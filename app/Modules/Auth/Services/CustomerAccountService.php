@@ -107,6 +107,29 @@ class CustomerAccountService
     }
 
     /**
+     * Completes the "profile finishes on first order" promise
+     * findOrCreateForSocialite()'s docblock made but nothing ever
+     * actually implemented — a Google sign-up has no phone, so it never
+     * gets a stakeholder_id at registration; every checkout from that
+     * account went through OrderService::checkout()'s guest/phone-match
+     * path (since accountCustomerId was null) and created or matched a
+     * Customer, but nothing ever linked it back to the account. Left
+     * permanently unlinked, that account could place orders forever but
+     * never see its own order history, submit a review ("No customer
+     * profile is linked to this account"), or receive a notification —
+     * every one of those reads stakeholder_id straight off the account.
+     * Called right after checkout with the Order's own customer_id;
+     * a no-op if the account is already linked (the normal-registration
+     * case, checkout's existingCustomerId path, never needs this).
+     */
+    public function linkStakeholderIfMissing(CustomerAccount $account, int $stakeholderId): void
+    {
+        if ($account->stakeholder_id === null) {
+            $account->update(['stakeholder_id' => $stakeholderId]);
+        }
+    }
+
+    /**
      * Called after a password reset (CustomerAuthController::resetPassword()),
      * mirroring AuthService::invalidateSessionsFor()'s "kill every session
      * predating a reset" intent for the customer guard. Currently a
