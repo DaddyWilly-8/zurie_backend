@@ -33,6 +33,7 @@ use App\Modules\Review\Providers\ReviewModuleServiceProvider;
 use App\Modules\Settings\Providers\SettingsModuleServiceProvider;
 use App\Modules\Stakeholder\Providers\StakeholderModuleServiceProvider;
 use App\Modules\Supplier\Providers\SupplierModuleServiceProvider;
+use App\Modules\Support\Providers\SupportModuleServiceProvider;
 use App\Modules\Target\Providers\TargetModuleServiceProvider;
 use App\Modules\Wishlist\Providers\WishlistModuleServiceProvider;
 use App\Providers\AppServiceProvider;
@@ -53,6 +54,7 @@ return [
     PriceListModuleServiceProvider::class,
     AccountModuleServiceProvider::class,
     SupplierModuleServiceProvider::class,
+    SupportModuleServiceProvider::class,
     PurchaseModuleServiceProvider::class,
     PosModuleServiceProvider::class,
     ReportModuleServiceProvider::class,

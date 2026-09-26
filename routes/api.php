@@ -37,3 +37,4 @@ require __DIR__.'/../app/Modules/Transaction/routes.php';
 require __DIR__.'/../app/Modules/Delivery/routes.php';
 require __DIR__.'/../app/Modules/InventoryTransfer/routes.php';
 require __DIR__.'/../app/Modules/Stakeholder/routes.php';
+require __DIR__.'/../app/Modules/Support/routes.php';

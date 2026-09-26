@@ -8,6 +8,7 @@ use App\Modules\Coupon\Exceptions\InvalidCouponException;
 use App\Modules\Finance\Exceptions\UnbalancedJournalEntryException;
 use App\Modules\Inventory\Exceptions\InsufficientStockException;
 use App\Modules\Order\Exceptions\InvalidOrderTransitionException;
+use App\Modules\Support\Exceptions\InvalidTicketTransitionException;
 use App\Support\Http\EnsureIdempotency;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Auth\AuthenticationException;
@@ -132,6 +133,16 @@ return Application::configure(basePath: dirname(__DIR__))
             // cancelled) — expected, preventable admin action, not a
             // server error. See zurie-backend-implementation-spec.md §7.
             if ($e instanceof InvalidOrderTransitionException) {
+                return response()->json([
+                    'success' => false,
+                    'message' => $e->getMessage(),
+                ], 422);
+            }
+
+            // A support ticket action that violates its lifecycle (see
+            // InvalidTicketTransitionException's docblock) — same
+            // treatment as InvalidOrderTransitionException.
+            if ($e instanceof InvalidTicketTransitionException) {
                 return response()->json([
                     'success' => false,
                     'message' => $e->getMessage(),

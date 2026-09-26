@@ -123,6 +123,10 @@ class PermissionSeeder extends Seeder
             // see Zurie_V3_ProsERP_Adaptation_Plan.md, Phase C)
             'stakeholder_view' => 'View stakeholders',
 
+            // Support (tickets/messaging)
+            'support_ticket_view' => 'View support tickets, messages, and reassignment history',
+            'support_ticket_manage' => 'Activate, reassign, and close support tickets; send messages',
+
             // Purchase Orders / GRNs (Phase D)
             'purchase_order_view' => 'View purchase orders',
             'purchase_order_create' => 'Create purchase orders',
